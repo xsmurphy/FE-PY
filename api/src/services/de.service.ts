@@ -23,7 +23,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { documents, tenantCerts, tenantCsc, type Tenant } from '../db/schema.js';
+import { documents, tenantCerts, type Tenant } from '../db/schema.js';
 import { asignarSiguienteNumero } from './numeracion.service.js';
 import { validatePreSigning, validatePostSigning } from '../lib/xsd-validator.js';
 import { extractCdc, generateCodigoSeguridad } from '../lib/cdc.js';
@@ -31,7 +31,7 @@ import {
   decryptCertBundle,
   type EncryptedCertBundle,
 } from './cert.service.js';
-import { envelopeDecrypt } from '../crypto/envelope.js';
+import { decryptTenantCsc } from './csc.service.js';
 import { uploadObject, storageKey } from '../storage/s3.js';
 import { env } from '../config/env.js';
 import {
@@ -145,32 +145,6 @@ const loadTenantCertBundle = async (tenantId: string, companyId: string): Promis
   };
 };
 
-/**
- * Carga el CSC descifrado del tenant. Devuelve null si no está configurado.
- */
-const loadTenantCsc = async (
-  tenantId: string,
-  companyId: string,
-): Promise<{ cscId: string; csc: string } | null> => {
-  const [row] = await db
-    .select()
-    .from(tenantCsc)
-    .where(and(eq(tenantCsc.tenantId, tenantId), eq(tenantCsc.companyId, companyId)))
-    .limit(1);
-  if (!row) return null;
-
-  const cscBuf = envelopeDecrypt({
-    ciphertext: row.encryptedCsc,
-    iv: row.ivCsc,
-    tag: row.tagCsc,
-    encryptedDek: row.encryptedDek,
-    ivDek: row.ivDek,
-    tagDek: row.tagDek,
-  });
-  const csc = cscBuf.toString('utf8');
-  cscBuf.fill(0);
-  return { cscId: row.cscId, csc };
-};
 
 /**
  * Firma un XML con el cert del tenant. Escribe el p12 a un tmp file con
@@ -313,7 +287,7 @@ export const createDeDocument = async (input: CreateDeInput): Promise<CreateDeRe
 
       // 6c. Generar QR (opcional, si CSC está configurado)
       let xmlWithQr = xmlSigned;
-      const csc = await loadTenantCsc(tenant.id, companyId);
+      const csc = await decryptTenantCsc(tenant.id, companyId);
       if (csc) {
         xmlWithQr = await qrgen.generateQR(xmlSigned, csc.cscId, csc.csc, tenant.env);
       }

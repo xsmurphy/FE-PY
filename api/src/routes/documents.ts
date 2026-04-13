@@ -1,14 +1,25 @@
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
+import { createRequire } from 'node:module';
+import { writeFile, unlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { and, eq, desc } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { documents } from '../db/schema.js';
+import { documents, tenantCerts } from '../db/schema.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireTenantScope } from '../middleware/tenant-scope.js';
 import { idempotencyCheck, idempotencyPersist } from '../middleware/idempotency.js';
 import { createDeDocument } from '../services/de.service.js';
-import { NotFoundError } from '../lib/errors.js';
-import { getPresignedDownloadUrl } from '../storage/s3.js';
+import { decryptCertBundle } from '../services/cert.service.js';
+import { NotFoundError, BadRequestError, SifenError } from '../lib/errors.js';
+import { env } from '../config/env.js';
+import { getPresignedDownloadUrl, getObject } from '../storage/s3.js';
+
+const require = createRequire(import.meta.url);
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const setapi = require('facturacionelectronicapy-setapi').default;
 
 // ═════════════════════════════════════════════════════════════════
 // Schemas zod — validación del body del DE
@@ -256,6 +267,190 @@ export const documentRoutes: FastifyPluginAsyncZod = async (app) => {
 
       if (!row) throw new NotFoundError('Document');
       return serializeDocument(row, true);
+    },
+  );
+
+  // ─────────────────────────────────────────────────────
+  // GET /v1/tenants/:tenant_id/de/:cdc/xml — descarga directa
+  //
+  // Devuelve el XML firmado con Content-Type application/xml y
+  // Content-Disposition attachment. Útil para clientes que no quieren
+  // usar presigned URLs.
+  // ─────────────────────────────────────────────────────
+  app.get(
+    '/tenants/:tenant_id/de/:cdc/xml',
+    {
+      preHandler: [requireAuth, requireTenantScope],
+      schema: {
+        tags: ['documents'],
+        summary: 'Descargar el XML firmado de un documento',
+        security: [{ bearerAuth: [] }],
+        params: z.object({
+          tenant_id: z.string().uuid(),
+          cdc: z.string().length(44),
+        }),
+      },
+    },
+    async (request, reply) => {
+      const [row] = await db
+        .select({ xmlKey: documents.xmlStorageKey })
+        .from(documents)
+        .where(
+          and(
+            eq(documents.companyId, request.company!.id),
+            eq(documents.tenantId, request.tenant!.id),
+            eq(documents.cdc, request.params.cdc),
+          ),
+        )
+        .limit(1);
+
+      if (!row) throw new NotFoundError('Document');
+      if (!row.xmlKey) {
+        throw new NotFoundError('XML not available for this document');
+      }
+
+      const xmlBuffer = await getObject(row.xmlKey);
+      return reply
+        .header('content-type', 'application/xml; charset=utf-8')
+        .header('content-disposition', `attachment; filename="${request.params.cdc}.xml"`)
+        .send(xmlBuffer);
+    },
+  );
+
+  // ─────────────────────────────────────────────────────
+  // POST /v1/tenants/:tenant_id/de/:cdc/consulta — re-query SIFEN
+  //
+  // Consulta el estado del DE en SIFEN usando setapi.consulta.
+  // Útil cuando el estado quedó en "pendiente" o "error" y el cliente
+  // quiere saber si SIFEN ya procesó el documento (p. ej. después de
+  // un timeout de red en el envío original).
+  //
+  // Actualiza el document row con la nueva respuesta de SIFEN.
+  // ─────────────────────────────────────────────────────
+  app.post(
+    '/tenants/:tenant_id/de/:cdc/consulta',
+    {
+      preHandler: [requireAuth, requireTenantScope],
+      schema: {
+        tags: ['documents'],
+        summary: 'Re-consultar el estado de un DE en SIFEN',
+        security: [{ bearerAuth: [] }],
+        params: z.object({
+          tenant_id: z.string().uuid(),
+          cdc: z.string().length(44),
+        }),
+        response: {
+          200: deResponseSchema,
+        },
+      },
+    },
+    async (request) => {
+      if (!env.ENABLE_SIFEN) {
+        throw new BadRequestError(
+          'SIFEN integration is disabled (ENABLE_SIFEN=false). Set ENABLE_SIFEN=true and configure certificates to use this endpoint.',
+        );
+      }
+
+      const [docRow] = await db
+        .select()
+        .from(documents)
+        .where(
+          and(
+            eq(documents.companyId, request.company!.id),
+            eq(documents.tenantId, request.tenant!.id),
+            eq(documents.cdc, request.params.cdc),
+          ),
+        )
+        .limit(1);
+      if (!docRow) throw new NotFoundError('Document');
+
+      // Cargar cert del tenant para autenticar con SIFEN
+      const [certRow] = await db
+        .select()
+        .from(tenantCerts)
+        .where(
+          and(
+            eq(tenantCerts.tenantId, request.tenant!.id),
+            eq(tenantCerts.companyId, request.company!.id),
+          ),
+        )
+        .limit(1);
+      if (!certRow) throw new NotFoundError('Certificate for tenant');
+      if (certRow.revokedAt) {
+        throw new BadRequestError('Certificate is revoked');
+      }
+
+      const decrypted = decryptCertBundle({
+        p12: {
+          ciphertext: certRow.encryptedP12,
+          iv: certRow.ivP12,
+          tag: certRow.tagP12,
+          encryptedDek: certRow.encryptedDek,
+          ivDek: certRow.ivDek,
+          tagDek: certRow.tagDek,
+        },
+        password: {
+          ciphertext: certRow.encryptedPassword,
+          iv: certRow.ivPassword,
+          tag: certRow.tagPassword,
+          encryptedDek: certRow.encryptedDek,
+          ivDek: certRow.ivDek,
+          tagDek: certRow.tagDek,
+        },
+      });
+
+      const tmpCertPath = join(tmpdir(), `cert-query-${randomUUID()}.p12`);
+
+      try {
+        await writeFile(tmpCertPath, decrypted.p12, { mode: 0o600 });
+        const requestId = Number(Date.now() % 1_000_000);
+
+        let sifenResponseRaw: Record<string, unknown>;
+        try {
+          const response = await setapi.consulta(
+            requestId,
+            request.params.cdc,
+            request.tenant!.env,
+            tmpCertPath,
+            decrypted.password,
+          );
+          sifenResponseRaw =
+            typeof response === 'string' ? { raw: response } : (response as Record<string, unknown>);
+        } catch (sifenErr) {
+          const msg = sifenErr instanceof Error ? sifenErr.message : String(sifenErr);
+          throw new SifenError(`Error al consultar SIFEN: ${msg}`);
+        }
+
+        // Heurística de estado (igual que en de.service.ts — calibrar con respuestas reales)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const codigo = (sifenResponseRaw as any)?.dCodRes ?? (sifenResponseRaw as any)?.gResProcDE?.dCodRes;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const mensaje = (sifenResponseRaw as any)?.dMsgRes ?? (sifenResponseRaw as any)?.gResProcDE?.dMsgRes;
+
+        let newEstado: typeof docRow.estado = docRow.estado;
+        if (codigo === '0260' || codigo === '0261' || codigo === '0262') {
+          newEstado = 'aprobado';
+        } else if (codigo) {
+          newEstado = 'rechazado';
+        }
+
+        const [updatedRow] = await db
+          .update(documents)
+          .set({
+            estado: newEstado,
+            sifenResponseRaw,
+            sifenCodigoRespuesta: codigo ?? docRow.sifenCodigoRespuesta,
+            sifenMensaje: mensaje ?? docRow.sifenMensaje,
+            updatedAt: new Date(),
+          })
+          .where(eq(documents.id, docRow.id))
+          .returning();
+
+        return serializeDocument(updatedRow, true);
+      } finally {
+        decrypted.p12.fill(0);
+        await unlink(tmpCertPath).catch(() => {});
+      }
     },
   );
 };

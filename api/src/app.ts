@@ -9,6 +9,7 @@ import { healthRoutes } from './routes/health.js';
 import { companyRoutes } from './routes/companies.js';
 import { tenantRoutes } from './routes/tenants.js';
 import { tenantCertRoutes } from './routes/tenant-certs.js';
+import { tenantCscRoutes } from './routes/tenant-csc.js';
 import { documentRoutes } from './routes/documents.js';
 
 export const buildApp = async () => {
@@ -72,6 +73,7 @@ export const buildApp = async () => {
       await api.register(companyRoutes);
       await api.register(tenantRoutes);
       await api.register(tenantCertRoutes);
+      await api.register(tenantCscRoutes);
       await api.register(documentRoutes);
     },
     { prefix: '/v1' },

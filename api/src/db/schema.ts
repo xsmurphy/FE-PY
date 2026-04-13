@@ -263,7 +263,7 @@ export const numeracion = pgTable(
     tipo: smallint('tipo').notNull(),
     establecimiento: text('establecimiento').notNull(),
     punto: text('punto').notNull(),
-    ultimoNumero: bigint('ultimo_numero', { mode: 'bigint' }).notNull().default(0n),
+    ultimoNumero: bigint('ultimo_numero', { mode: 'number' }).notNull().default(0),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({

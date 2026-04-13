@@ -1,0 +1,52 @@
+{
+  "name": "facturacion-api",
+  "version": "0.1.0",
+  "description": "API comercial multi-tenant de facturación electrónica Paraguay (SIFEN)",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx src/db/migrate.ts",
+    "db:studio": "drizzle-kit studio",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.658.0",
+    "@aws-sdk/s3-request-presigner": "^3.658.0",
+    "@fastify/cors": "^10.0.1",
+    "@fastify/helmet": "^12.0.1",
+    "@fastify/multipart": "^9.0.1",
+    "bullmq": "^5.21.2",
+    "drizzle-orm": "^0.36.1",
+    "facturacionelectronicapy-qrgen": "^1.0.9",
+    "facturacionelectronicapy-setapi": "^1.0.12",
+    "facturacionelectronicapy-xmlgen": "file:..",
+    "facturacionelectronicapy-xmlsign": "^1.0.28",
+    "fastify": "^5.1.0",
+    "fastify-type-provider-zod": "^4.0.2",
+    "ioredis": "^5.4.1",
+    "node-forge": "^1.3.1",
+    "pino": "^9.5.0",
+    "pino-pretty": "^11.3.0",
+    "postgres": "^3.4.5",
+    "uuid": "^11.0.2",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "@types/node-forge": "^1.3.11",
+    "@types/uuid": "^10.0.0",
+    "drizzle-kit": "^0.28.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.4"
+  }
+}

@@ -39,6 +39,9 @@
   "homepage": "https://github.com/marcosjara/facturacionelectronicapy-xmlgen#readme",
   "dependencies": {
     "copyfiles": "^2.4.1",
+    "facturacionelectronicapy-qrgen": "^1.0.9",
+    "facturacionelectronicapy-setapi": "^1.0.34",
+    "facturacionelectronicapy-xmlsign": "^1.0.28",
     "fs": "0.0.1-security",
     "xml2js": "^0.4.23"
   },

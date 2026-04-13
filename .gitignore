@@ -1,3 +1,9 @@
+# graphify MCP workspace (machine-specific, not for VCS)
+graphify-out/
+
+# Local test artifacts
+test-local-output.xml
+
 # Logs
 logs
 *.log

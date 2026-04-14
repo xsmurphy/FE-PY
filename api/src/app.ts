@@ -12,6 +12,7 @@ import { tenantCertRoutes } from './routes/tenant-certs.js';
 import { tenantCscRoutes } from './routes/tenant-csc.js';
 import { documentRoutes } from './routes/documents.js';
 import { eventoRoutes } from './routes/eventos.js';
+import { batchRoutes } from './routes/batches.js';
 
 export const buildApp = async () => {
   const app = Fastify({
@@ -77,6 +78,7 @@ export const buildApp = async () => {
       await api.register(tenantCscRoutes);
       await api.register(documentRoutes);
       await api.register(eventoRoutes);
+      await api.register(batchRoutes);
     },
     { prefix: '/v1' },
   );

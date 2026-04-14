@@ -9,8 +9,10 @@
   },
   "scripts": {
     "dev": "tsx watch src/server.ts",
+    "worker:dev": "tsx watch src/queue/worker-server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
+    "start:worker": "node dist/queue/worker-server.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "db:generate": "drizzle-kit generate",

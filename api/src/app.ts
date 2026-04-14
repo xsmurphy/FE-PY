@@ -13,6 +13,7 @@ import {
 } from 'fastify-type-provider-zod';
 import { env } from './config/env.js';
 import { initSentry, captureException } from './lib/sentry.js';
+import { AppError } from './lib/errors.js';
 import { registerErrorHandler } from './middleware/error-handler.js';
 import { registerAuditLog } from './middleware/audit-log.js';
 import { healthRoutes } from './routes/health.js';
@@ -77,13 +78,27 @@ export const buildApp = async () => {
   await app.register(helmet, { contentSecurityPolicy: false });
   await app.register(cors, { origin: parseCorsOrigins(env.CORS_ORIGINS) });
 
-  // Rate limiting — clave por company_id si está autenticado, si no por IP.
-  // Se aplica GLOBALMENTE después del auth, así que rutas no-auth usan IP.
+  // Rate limiting — clave por API key prefix (sin tocar DB) o por IP.
+  //
+  // Nota importante: rate-limit se registra globalmente y su keyGenerator
+  // corre ANTES de cualquier preHandler de ruta (requireAuth). Por eso NO
+  // podemos leer `req.company` — todavía no existe. En vez de eso, extraemos
+  // el prefijo del Bearer token directo del header: da el mismo efecto
+  // (rate-limit por tenant/cliente) sin hacer un lookup a la DB en el hot path.
+  //
+  // Requests sin auth → rate-limit por IP como fallback.
   await app.register(rateLimit, {
     max: env.RATE_LIMIT_MAX,
     timeWindow: env.RATE_LIMIT_WINDOW_MS,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    keyGenerator: (req: any) => (req.company?.id ?? req.ip) as string,
+    keyGenerator: (req) => {
+      const auth = req.headers.authorization;
+      if (typeof auth === 'string' && auth.startsWith('Bearer cmp_')) {
+        // Primeros 20 chars del bearer → suficiente entropía para distinguir
+        // companies sin exponer la clave completa en logs del rate limiter
+        return auth.slice(7, 27);
+      }
+      return req.ip;
+    },
     errorResponseBuilder: (_req, context) => ({
       error: {
         code: 'rate_limit_exceeded',
@@ -158,11 +173,32 @@ export const buildApp = async () => {
   registerErrorHandler(app);
   registerAuditLog(app);
 
-  // Hook para reportar errores 5xx a Sentry (los 4xx son errores de cliente)
+  // Hook para reportar errores 5xx a Sentry (los 4xx son errores de cliente).
+  //
+  // Tres tipos de errores distintos a filtrar:
+  //   - AppError: nuestras clases propias en lib/errors.ts (usan statusCode como
+  //     propiedad de clase, no de instancia plana)
+  //   - FastifyError: errores nativos de Fastify con statusCode como prop
+  //   - Error genérico: sin statusCode → asumimos 500
   app.addHook('onError', async (request, _reply, error) => {
-    if ('statusCode' in error && typeof error.statusCode === 'number' && error.statusCode < 500) {
+    // AppError de la app — filtramos 4xx
+    if (error instanceof AppError) {
+      if (error.statusCode < 500) return;
+      captureException(error, {
+        companyId: request.company?.id,
+        tenantId: request.tenant?.id,
+        requestId: request.id,
+      });
       return;
     }
+
+    // Fastify error con statusCode
+    const status =
+      'statusCode' in error && typeof (error as { statusCode?: unknown }).statusCode === 'number'
+        ? ((error as { statusCode: number }).statusCode as number)
+        : 500;
+    if (status < 500) return;
+
     captureException(error, {
       companyId: request.company?.id,
       tenantId: request.tenant?.id,

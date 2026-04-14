@@ -32,14 +32,37 @@ const resolveSchemaPath = (envVar: string | undefined, fallback: string): string
   return candidate;
 };
 
-export const SCHEMA_UNSIGNED = resolveSchemaPath(
-  process.env.XSD_UNSIGNED_PATH,
-  'xsd-unsigned/siRecepDE_v150.xsd',
-);
-export const SCHEMA_STRICT = resolveSchemaPath(
-  process.env.XSD_STRICT_PATH,
-  'xsd/siRecepDE_v150.xsd',
-);
+// Lazy getters — evitan cachear los env vars al momento de import, lo cual
+// rompería los tests que setean env vars con await import() y el comportamiento
+// del server si alguien cambia XSD_*_PATH en runtime.
+let _schemaUnsigned: string | null = null;
+let _schemaStrict: string | null = null;
+
+export const getSchemaUnsignedPath = (): string => {
+  if (_schemaUnsigned === null) {
+    _schemaUnsigned = resolveSchemaPath(
+      process.env.XSD_UNSIGNED_PATH,
+      'xsd-unsigned/siRecepDE_v150.xsd',
+    );
+  }
+  return _schemaUnsigned;
+};
+
+export const getSchemaStrictPath = (): string => {
+  if (_schemaStrict === null) {
+    _schemaStrict = resolveSchemaPath(
+      process.env.XSD_STRICT_PATH,
+      'xsd/siRecepDE_v150.xsd',
+    );
+  }
+  return _schemaStrict;
+};
+
+// Reset helper para tests
+export const __resetSchemaPaths = (): void => {
+  _schemaUnsigned = null;
+  _schemaStrict = null;
+};
 
 export interface XsdValidationResult {
   valid: boolean;
@@ -82,7 +105,7 @@ export const validateXsd = async (
 };
 
 /** Atajo: valida contra el schema pre-firma. */
-export const validatePreSigning = (xml: string) => validateXsd(xml, SCHEMA_UNSIGNED);
+export const validatePreSigning = (xml: string) => validateXsd(xml, getSchemaUnsignedPath());
 
 /** Atajo: valida contra el schema estricto (post-firma). */
-export const validatePostSigning = (xml: string) => validateXsd(xml, SCHEMA_STRICT);
+export const validatePostSigning = (xml: string) => validateXsd(xml, getSchemaStrictPath());

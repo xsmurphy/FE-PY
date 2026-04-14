@@ -15,6 +15,15 @@ import {
   pgEnum,
   customType,
 } from 'drizzle-orm/pg-core';
+import { v7 as uuidv7 } from 'uuid';
+
+/**
+ * UUID v7 generado en la aplicación — evita depender de la extensión
+ * `pgcrypto` de Postgres (que algunas instancias managed no tienen por
+ * default). Además v7 es time-ordered, lo que mejora el rendimiento de
+ * índices BTree en inserts masivos.
+ */
+const uuidPrimaryKey = () => uuid().primaryKey().$defaultFn(() => uuidv7());
 
 // ──────────────────────────────────────────────────────────────
 // Custom bytea type (Drizzle no lo tiene nativo en drizzle-orm/pg-core)
@@ -58,7 +67,7 @@ export const eventoEstadoEnum = pgEnum('evento_estado', ['pendiente', 'enviado',
 export const companies = pgTable(
   'companies',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
+    id: uuidPrimaryKey(),
     name: text('name').notNull(),
     email: text('email').notNull(),
     apiKeyHash: text('api_key_hash').notNull(),
@@ -81,7 +90,7 @@ export const companies = pgTable(
 export const tenants = pgTable(
   'tenants',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
+    id: uuidPrimaryKey(),
     companyId: uuid('company_id')
       .notNull()
       .references(() => companies.id, { onDelete: 'cascade' }),
@@ -134,7 +143,7 @@ export const tenants = pgTable(
 export const tenantCerts = pgTable(
   'tenant_certs',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
+    id: uuidPrimaryKey(),
     tenantId: uuid('tenant_id')
       .notNull()
       .references(() => tenants.id, { onDelete: 'cascade' }),
@@ -202,7 +211,7 @@ export const tenantCsc = pgTable(
 export const documents = pgTable(
   'documents',
   {
-    id: uuid('id').primaryKey().defaultRandom(), // txn_id interno
+    id: uuidPrimaryKey(), // txn_id interno
     companyId: uuid('company_id').notNull(),
     tenantId: uuid('tenant_id')
       .notNull()
@@ -277,7 +286,7 @@ export const numeracion = pgTable(
 export const eventos = pgTable(
   'eventos',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
+    id: uuidPrimaryKey(),
     companyId: uuid('company_id').notNull(),
     tenantId: uuid('tenant_id')
       .notNull()
@@ -325,7 +334,7 @@ export const idempotencyKeys = pgTable(
 export const apiLogs = pgTable(
   'api_logs',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
+    id: uuidPrimaryKey(),
     companyId: uuid('company_id'),
     tenantId: uuid('tenant_id'),
     method: text('method').notNull(),

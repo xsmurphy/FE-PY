@@ -33,6 +33,7 @@ import {
 } from './cert.service.js';
 import { decryptTenantCsc } from './csc.service.js';
 import { uploadObject, storageKey } from '../storage/s3.js';
+import { enqueueSifenRetry } from '../queue/queues.js';
 import { env } from '../config/env.js';
 import {
   BadRequestError,
@@ -292,60 +293,101 @@ export const createDeDocument = async (input: CreateDeInput): Promise<CreateDeRe
       }
 
       xmlFinal = xmlWithQr;
-
-      // 6d. Enviar a SIFEN
-      try {
-        const requestId = Number(Date.now() % 1_000_000);
-        // decryptCertBundle de nuevo — setapi necesita el path del cert
-        const decryptedCert = decryptCertBundle(certBundle);
-        const sifenTmpPath = join(tmpdir(), `sifen-cert-${randomUUID()}.p12`);
-        await writeFile(sifenTmpPath, decryptedCert.p12, { mode: 0o600 });
-
-        try {
-          const response = await setapi.recibe(
-            requestId,
-            xmlWithQr,
-            tenant.env,
-            sifenTmpPath,
-            decryptedCert.password,
-          );
-          sifenResponseRaw =
-            typeof response === 'string' ? { raw: response } : (response as Record<string, unknown>);
-          sentToSifen = true;
-
-          // Parsear estado de la respuesta (los codigos SIFEN reales varían)
-          const codigo = extractSifenCodigo(sifenResponseRaw);
-          const mensaje = extractSifenMensaje(sifenResponseRaw);
-          sifenCodigoRespuesta = codigo;
-          sifenMensaje = mensaje;
-
-          // Heurística: código "0260" = aceptado, otros = rechazado
-          // Los códigos reales los define SIFEN — esto es placeholder
-          if (codigo && (codigo === '0260' || codigo === '0261' || codigo === '0262')) {
-            estado = 'aprobado';
-          } else {
-            estado = 'rechazado';
-          }
-        } finally {
-          decryptedCert.p12.fill(0);
-          await unlink(sifenTmpPath).catch(() => {});
-        }
-      } catch (sifenErr) {
-        const msg = sifenErr instanceof Error ? sifenErr.message : String(sifenErr);
-        throw new SifenError(`Error al comunicar con SIFEN: ${msg}`, { originalError: msg });
-      }
     }
 
-    // 7. Subir XML a S3
+    // 7. Subir XML a S3 SIEMPRE antes del envío — así el retry worker
+    //    puede recuperar el XML firmado si hace falta reenviar.
     const xmlKey = storageKey.xml(companyId, tenant.id, cdc);
     await uploadObject(xmlKey, xmlFinal, { contentType: 'application/xml' });
 
-    // 8. Actualizar document row con resultado
+    // Guardamos el CDC y xml_storage_key ANTES de intentar enviar, así si el
+    // envío falla el retry worker puede encontrar el document por CDC.
     await db
       .update(documents)
       .set({
         cdc,
         xmlStorageKey: xmlKey,
+        estado: env.ENABLE_SIFEN ? 'enviando' : 'pendiente',
+        updatedAt: new Date(),
+      })
+      .where(eq(documents.id, docId));
+
+    // 8. Enviar a SIFEN (gated por ENABLE_SIFEN). Si falla por error transitorio,
+    //    encolamos un retry en vez de tirar error 5xx al cliente.
+    if (env.ENABLE_SIFEN) {
+      const certBundle = await loadTenantCertBundle(tenant.id, companyId);
+      const decryptedCert = decryptCertBundle(certBundle);
+      const sifenTmpPath = join(tmpdir(), `sifen-cert-${randomUUID()}.p12`);
+
+      try {
+        await writeFile(sifenTmpPath, decryptedCert.p12, { mode: 0o600 });
+        const requestId = Number(Date.now() % 1_000_000);
+
+        const response = await setapi.recibe(
+          requestId,
+          xmlFinal,
+          tenant.env,
+          sifenTmpPath,
+          decryptedCert.password,
+        );
+        sifenResponseRaw =
+          typeof response === 'string' ? { raw: response } : (response as Record<string, unknown>);
+        sentToSifen = true;
+
+        // Calibrar con respuestas reales en Fase 1 — estos códigos son placeholder
+        const codigo = extractSifenCodigo(sifenResponseRaw);
+        const mensaje = extractSifenMensaje(sifenResponseRaw);
+        sifenCodigoRespuesta = codigo;
+        sifenMensaje = mensaje;
+
+        if (codigo && (codigo === '0260' || codigo === '0261' || codigo === '0262')) {
+          estado = 'aprobado';
+        } else {
+          estado = 'rechazado';
+        }
+      } catch (sifenErr) {
+        // Error transitorio: network timeout, SIFEN 5xx, etc.
+        // Marcamos como error y encolamos retry. El cliente recibe respuesta
+        // indicando que el documento está en estado 'error' y el retry worker
+        // va a intentar reenviarlo automáticamente con backoff.
+        const msg = sifenErr instanceof Error ? sifenErr.message : String(sifenErr);
+
+        await db
+          .update(documents)
+          .set({
+            estado: 'error',
+            errorMessage: `SIFEN send failed: ${msg}`,
+            updatedAt: new Date(),
+          })
+          .where(eq(documents.id, docId));
+
+        // Fire-and-forget enqueue del retry. No bloqueamos la respuesta al
+        // cliente por un error de BullMQ.
+        void enqueueSifenRetry({
+          documentId: docId,
+          companyId,
+          tenantId: tenant.id,
+          cdc,
+        }).catch(() => {
+          // El error ya está persistido en el document row; el cliente puede
+          // re-disparar manualmente con POST /de/:cdc/consulta si el retry
+          // automático no se encoló.
+        });
+
+        throw new SifenError(
+          `SIFEN envío falló (retry automático encolado): ${msg}`,
+          { originalError: msg, documentId: docId, cdc },
+        );
+      } finally {
+        decryptedCert.p12.fill(0);
+        await unlink(sifenTmpPath).catch(() => {});
+      }
+    }
+
+    // 9. Actualizar document row con el resultado final del envío
+    await db
+      .update(documents)
+      .set({
         estado,
         sifenResponseRaw,
         sifenCodigoRespuesta,

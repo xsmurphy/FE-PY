@@ -228,14 +228,12 @@ export const tenantRoutes: FastifyPluginAsyncZod = async (app) => {
         summary: 'Suspender un tenant (soft delete)',
         security: [{ bearerAuth: [] }],
         params: z.object({ tenant_id: z.string().uuid() }),
-        response: {
-          204: z.null(),
-        },
       },
     },
     async (request, reply) => {
       await suspendTenant(request.company!.id, request.tenant!.id);
-      return reply.status(204).send(null);
+      reply.status(204);
+      return;
     },
   );
 };

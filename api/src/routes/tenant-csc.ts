@@ -88,14 +88,12 @@ export const tenantCscRoutes: FastifyPluginAsyncZod = async (app) => {
         summary: 'Eliminar CSC del tenant',
         security: [{ bearerAuth: [] }],
         params: z.object({ tenant_id: z.string().uuid() }),
-        response: {
-          204: z.null(),
-        },
       },
     },
     async (request, reply) => {
       await deleteCsc(request.tenant!.id, request.company!.id);
-      return reply.status(204).send(null);
+      reply.status(204);
+      return;
     },
   );
 };

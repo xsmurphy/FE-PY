@@ -209,9 +209,6 @@ export const tenantCertRoutes: FastifyPluginAsyncZod = async (app) => {
         summary: 'Revocar el certificado del tenant',
         security: [{ bearerAuth: [] }],
         params: z.object({ tenant_id: z.string().uuid() }),
-        response: {
-          204: z.null(),
-        },
       },
     },
     async (request, reply) => {
@@ -223,7 +220,8 @@ export const tenantCertRoutes: FastifyPluginAsyncZod = async (app) => {
             eq(tenantCerts.companyId, request.company!.id),
           ),
         );
-      return reply.status(204).send(null);
+      reply.status(204);
+      return;
     },
   );
 };

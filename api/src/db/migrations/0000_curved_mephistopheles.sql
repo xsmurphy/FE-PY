@@ -5,7 +5,7 @@ CREATE TYPE "public"."evento_tipo" AS ENUM('cancelacion', 'inutilizacion', 'conf
 CREATE TYPE "public"."sifen_env" AS ENUM('test', 'prod');--> statement-breakpoint
 CREATE TYPE "public"."tenant_status" AS ENUM('active', 'suspended');--> statement-breakpoint
 CREATE TABLE IF NOT EXISTS "api_logs" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"id" uuid PRIMARY KEY NOT NULL,
 	"company_id" uuid,
 	"tenant_id" uuid,
 	"method" text NOT NULL,
@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS "api_logs" (
 );
 --> statement-breakpoint
 CREATE TABLE IF NOT EXISTS "companies" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"id" uuid PRIMARY KEY NOT NULL,
 	"name" text NOT NULL,
 	"email" text NOT NULL,
 	"api_key_hash" text NOT NULL,
@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS "companies" (
 );
 --> statement-breakpoint
 CREATE TABLE IF NOT EXISTS "documents" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"id" uuid PRIMARY KEY NOT NULL,
 	"company_id" uuid NOT NULL,
 	"tenant_id" uuid NOT NULL,
 	"cdc" text NOT NULL,
@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS "documents" (
 );
 --> statement-breakpoint
 CREATE TABLE IF NOT EXISTS "eventos" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"id" uuid PRIMARY KEY NOT NULL,
 	"company_id" uuid NOT NULL,
 	"tenant_id" uuid NOT NULL,
 	"document_cdc" text,
@@ -95,7 +95,7 @@ CREATE TABLE IF NOT EXISTS "numeracion" (
 );
 --> statement-breakpoint
 CREATE TABLE IF NOT EXISTS "tenant_certs" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"id" uuid PRIMARY KEY NOT NULL,
 	"tenant_id" uuid NOT NULL,
 	"company_id" uuid NOT NULL,
 	"encrypted_p12" "bytea" NOT NULL,
@@ -130,7 +130,7 @@ CREATE TABLE IF NOT EXISTS "tenant_csc" (
 );
 --> statement-breakpoint
 CREATE TABLE IF NOT EXISTS "tenants" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"id" uuid PRIMARY KEY NOT NULL,
 	"company_id" uuid NOT NULL,
 	"external_id" text,
 	"ruc" text NOT NULL,

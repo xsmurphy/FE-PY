@@ -216,7 +216,11 @@ export const documents = pgTable(
     tenantId: uuid('tenant_id')
       .notNull()
       .references(() => tenants.id, { onDelete: 'cascade' }),
-    cdc: text('cdc').notNull(), // 44 dígitos
+    // cdc nullable: durante la generación el row existe con cdc=null.
+    // El UNIQUE index de Postgres permite múltiples NULLs, así que podemos
+    // tener N documentos en estado 'generando' en paralelo sin conflicto.
+    // Se llena con el CDC real (44 dígitos) cuando xmlgen termina.
+    cdc: text('cdc'),
     tipo: smallint('tipo').notNull(), // 1=FE, 5=NC (MVP)
     establecimiento: text('establecimiento').notNull(),
     punto: text('punto').notNull(),

@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS "documents" (
 	"id" uuid PRIMARY KEY NOT NULL,
 	"company_id" uuid NOT NULL,
 	"tenant_id" uuid NOT NULL,
-	"cdc" text NOT NULL,
+	"cdc" text,
 	"tipo" smallint NOT NULL,
 	"establecimiento" text NOT NULL,
 	"punto" text NOT NULL,

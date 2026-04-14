@@ -1,5 +1,5 @@
 {
-  "id": "e9b8ef77-99c5-41e8-b391-f16ca3439c76",
+  "id": "2674099a-023d-4a92-b0b4-3aec8967ba6b",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -241,7 +241,7 @@
           "name": "cdc",
           "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "tipo": {
           "name": "tipo",

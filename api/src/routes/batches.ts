@@ -36,7 +36,7 @@ const batchStatusSchema = z.object({
   documents: z.array(
     z.object({
       txnId: z.string().uuid(),
-      cdc: z.string(),
+      cdc: z.string().nullable(),
       estado: z.string(),
       numero: z.string(),
       index: z.number().int(),

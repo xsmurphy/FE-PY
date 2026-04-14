@@ -64,7 +64,7 @@ const createDeBodySchema = z
 
 const deResponseSchema = z.object({
   txnId: z.string().uuid(),
-  cdc: z.string().length(44),
+  cdc: z.string().length(44).nullable(),
   estado: z.enum(['pendiente', 'aprobado', 'rechazado', 'error']),
   tipo: z.number(),
   numero: z.string(),
@@ -89,7 +89,7 @@ const deResponseSchema = z.object({
 
 const documentListItemSchema = z.object({
   txnId: z.string().uuid(),
-  cdc: z.string(),
+  cdc: z.string().nullable(),
   tipo: z.number(),
   numero: z.string(),
   establecimiento: z.string(),

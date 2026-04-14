@@ -36,6 +36,7 @@ import {
   ConflictError,
   SifenError,
   InternalError,
+  ValidationError,
 } from '../lib/errors.js';
 
 const require = createRequire(import.meta.url);
@@ -163,7 +164,15 @@ const extractSifenMensaje = (resp: Record<string, any>): string | undefined =>
 
 /**
  * Verifica si un documento ya fue cancelado con éxito previamente.
- * Busca en la tabla eventos una entry tipo=cancelacion con estado=aprobado.
+ * Busca en la tabla eventos una entry tipo=cancelacion con estado no terminal.
+ *
+ * Considera como "cancelado":
+ *   - 'aprobado' / 'enviado': cancelación confirmada por SIFEN
+ *   - 'pendiente': cancelación registrada localmente, aún no confirmada por SIFEN
+ *     (incluye el caso ENABLE_SIFEN=false donde nunca llega a SIFEN)
+ *
+ * NO considera 'error' ni 'rechazado' — esos son cancelaciones fallidas que
+ * no afectan el estado del documento.
  */
 export const isDocumentCancelled = async (
   tenantId: string,
@@ -179,7 +188,7 @@ export const isDocumentCancelled = async (
         eq(eventos.tipoEvento, 'cancelacion'),
       ),
     );
-  return rows.some((r) => r.estado === 'aprobado' || r.estado === 'enviado');
+  return rows.some((r) => ['aprobado', 'enviado', 'pendiente'].includes(r.estado));
 };
 
 // ═════════════════════════════════════════════════════════════════
@@ -247,11 +256,14 @@ export const cancelarDocumento = async (input: CancelacionInput): Promise<Evento
     // Para envíos single-evento (nuestro MVP), siempre 1.
     const sifenEventoId = 1;
 
-    const xml: string = await xmlgen.generateXMLEventoCancelacion(
-      sifenEventoId,
-      params,
-      eventoData,
-    );
+    let xml: string;
+    try {
+      xml = await xmlgen.generateXMLEventoCancelacion(sifenEventoId, params, eventoData);
+    } catch (xmlgenErr) {
+      const msg = xmlgenErr instanceof Error ? xmlgenErr.message : String(xmlgenErr);
+      const errors = msg.split(';').map((s) => s.trim()).filter(Boolean);
+      throw new ValidationError('xmlgen validation failed', errors.length > 0 ? errors : [msg]);
+    }
 
     let xmlFinal = xml;
     let signed = false;
@@ -397,14 +409,27 @@ export const inutilizarRango = async (input: InutilizacionInput): Promise<Evento
 
   try {
     const params = buildParamsFromTenant(tenant);
-    const eventoData = { tipoDocumento, establecimiento, punto, desde, hasta, motivo };
+    // El motor xmlgen requiere `timbrado` en el data del evento de inutilización
+    // (distinto de params.timbradoNumero — es duplicado a propósito).
+    const eventoData = {
+      tipoDocumento,
+      establecimiento,
+      punto,
+      desde,
+      hasta,
+      motivo,
+      timbrado: tenant.timbradoNumero,
+    };
     const sifenEventoId = 1;
 
-    const xml: string = await xmlgen.generateXMLEventoInutilizacion(
-      sifenEventoId,
-      params,
-      eventoData,
-    );
+    let xml: string;
+    try {
+      xml = await xmlgen.generateXMLEventoInutilizacion(sifenEventoId, params, eventoData);
+    } catch (xmlgenErr) {
+      const msg = xmlgenErr instanceof Error ? xmlgenErr.message : String(xmlgenErr);
+      const errors = msg.split(';').map((s) => s.trim()).filter(Boolean);
+      throw new ValidationError('xmlgen validation failed', errors.length > 0 ? errors : [msg]);
+    }
 
     let xmlFinal = xml;
     let signed = false;

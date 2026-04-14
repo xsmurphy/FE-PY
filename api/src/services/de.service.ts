@@ -225,7 +225,7 @@ export const createDeDocument = async (input: CreateDeInput): Promise<CreateDeRe
       .values({
         companyId,
         tenantId: tenant.id,
-        cdc: '', // temporal, se llena después
+        cdc: null, // se llena después con el CDC de xmlgen — el UNIQUE permite múltiples NULL
         tipo: tipoDocumento,
         establecimiento,
         punto,
@@ -249,7 +249,19 @@ export const createDeDocument = async (input: CreateDeInput): Promise<CreateDeRe
   try {
     // 4. Generar XML
     const params = buildParamsFromTenant(tenant);
-    const xml: string = await xmlgen.generateXMLDE(params, dataForXmlgen);
+    let xml: string;
+    try {
+      xml = await xmlgen.generateXMLDE(params, dataForXmlgen);
+    } catch (xmlgenErr) {
+      // El motor xmlgen tiene su propio validador de reglas de negocio.
+      // Cuando lanza Error con mensaje legible ("La razon Social debe tener
+      // entre 4 y 250 caracteres"), lo re-envolvemos como ValidationError (422)
+      // en vez de dejarlo subir al handler de 500.
+      const msg = xmlgenErr instanceof Error ? xmlgenErr.message : String(xmlgenErr);
+      // Mensaje típico del motor contiene las reglas violadas separadas por ';'
+      const errors = msg.split(';').map((s) => s.trim()).filter(Boolean);
+      throw new ValidationError('xmlgen validation failed', errors.length > 0 ? errors : [msg]);
+    }
 
     const cdc = extractCdc(xml);
     if (!cdc) {

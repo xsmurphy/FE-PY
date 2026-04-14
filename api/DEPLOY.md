@@ -3,6 +3,13 @@
 Guía para levantar el API en producción usando Coolify self-hosted sobre un
 droplet de DigitalOcean.
 
+**Estado del código:** Fase 2 MVP completa, probada end-to-end en Docker
+con Postgres + Redis + MinIO. Imagen de runtime incluye OpenJDK 17 para
+la generación de KUDE. Tamaño final ~400 MB.
+
+Ver [`../NEXT_STEPS.md`](../NEXT_STEPS.md) para el estado actualizado del
+proyecto y la lista completa de bugs resueltos en la validación E2E.
+
 ## Requisitos previos
 
 1. **Droplet DO** con Coolify instalado (mínimo 2 GB RAM, 2 vCPU)
@@ -41,7 +48,29 @@ MASTER_KEY_BASE64=<32-bytes-base64>
 # Flipear a true cuando haya certs reales de tenants
 ENABLE_SIFEN=true
 
+# KUDE (PDF visual) — requiere OpenJDK 17+ en el contenedor (ya incluido
+# en el Dockerfile). Flipear a true cuando quieras generar los PDFs.
+ENABLE_KUDE=true
+JAVA_PATH=/usr/lib/jvm/default-jvm/bin/java
+
+# Seguridad: NO dejar el playground expuesto en producción
+# (todavía no gated — por ahora restringir vía reverse proxy / IP allowlist)
+# ENABLE_PLAYGROUND=false
+
+# Rate limiting (por API key prefix)
+RATE_LIMIT_MAX=600
+RATE_LIMIT_WINDOW_MS=60000
+
+# CORS: en prod, limitar a los dominios de los clientes
+CORS_ORIGINS=https://pos-cliente-a.com,https://admin.pos-cliente-a.com
+
+# Cert expiration alerts
+CERT_EXPIRATION_CHECK_INTERVAL_MS=86400000
+CERT_EXPIRATION_WARNING_DAYS=30
+
 SENTRY_DSN=<opcional>
+SENTRY_ENVIRONMENT=production
+SENTRY_TRACES_SAMPLE_RATE=0.1
 ```
 
 ### Alternativa con MinIO en Coolify
@@ -66,13 +95,29 @@ persistent volume para `/data`.
 2. **Source**: GitHub repo `xsmurphy/FE-PY`, branch `main`
 3. **Build Settings**:
    - Dockerfile path: `api/Dockerfile`
-   - Build context: `/` (raíz del repo)
+   - Build context: `/` (raíz del repo, NO `api/`)
    - Port: `3000`
 4. **Domain**: `api.facturacion.com.py` (Coolify configura SSL automáticamente)
 5. **Healthcheck**: `GET /v1/health` cada 30s
 6. **Deploy**
 
-La primera vez tarda ~3-5 min (compila motor + API + imagen Alpine).
+La primera vez tarda **~10-15 min** porque la imagen incluye:
+- Build del motor xmlgen (TS 3.7 → dist)
+- Build del API (TS 5 → dist)
+- Instalación de `openjdk17-jre-headless` (~150 MB, para KUDE)
+- `libxml2-utils` (xmllint para validación XSD)
+- `tini` (init process)
+
+La imagen resultante pesa ~400 MB. Después del primer build, los
+rebuilds incrementales tardan ~1-2 min gracias al cache de Docker layers.
+
+### URLs expuestas después del deploy
+
+- `https://api.facturacion.com.py/v1/health` — health check
+- `https://api.facturacion.com.py/docs` — Swagger UI
+- `https://api.facturacion.com.py/v1/*` — endpoints del API
+- `https://api.facturacion.com.py/playground` — **⚠ tapar con reverse proxy
+  o IP allowlist en producción**, es una UI de testing sin auth
 
 ## Servicios adicionales
 
@@ -134,9 +179,22 @@ Podés configurar **auto-deploy** o **manual approval** según prefieras.
 
 ### El contenedor no arranca
 Revisar logs en Coolify. Causas típicas:
-- Falta `MASTER_KEY_BASE64` o tiene longitud incorrecta
+- Falta `MASTER_KEY_BASE64` o tiene longitud incorrecta (debe decodificar a 32 bytes)
 - `DATABASE_URL` mal escrito (falta `?sslmode=require` en managed DBs)
 - Migrations fallaron — correr `docker compose run api migrate` para ver el error
+- Si usás postgres local bajo Coolify, asegurate que el port forwarding del
+  compose NO conflicte con tu postgres local (el compose de dev usa 5433, 6380,
+  9100, 9101 por esa razón)
+
+### Errores conocidos de la primera corrida (ya fixeados)
+Si estás revisando un commit viejo, los siguientes bugs ya fueron resueltos
+en `9938878` — si alguno vuelve a aparecer, es regression:
+1. `Cannot find module 'facturacionelectronicapy-xmlgen'` → Dockerfile paths
+2. `tsc: not found` durante npm install → prepare script del motor
+3. `Cannot find module 'xml2js'` → node_modules del motor no copiado
+4. `Key (cdc)=() already exists` → cdc=string vacío en lugar de null
+5. Errores del motor devolvían 500 en vez de 422 → sin try/catch explícito
+6. `Falta el Timbrado en data.timbrado` en inutilización → campo no documentado
 
 ### SIFEN está caído
 Con `ENABLE_SIFEN=true`, si SIFEN test/prod está caído las emisiones

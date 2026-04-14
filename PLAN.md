@@ -1,5 +1,24 @@
 # Plan: Motor de Facturación Electrónica Paraguay - API Multi-tenant
 
+> **⚠️ DOCUMENTO HISTÓRICO — plan inicial del proyecto (2026-04-13).**
+>
+> Este archivo es la hoja de ruta original escrita antes de empezar a codear,
+> y describe las 3 fases del proyecto en detalle. **La Fase 2 está completa**
+> (validada end-to-end en Docker con Postgres + Redis + MinIO reales) y la
+> Fase 3 arrancó parcialmente.
+>
+> **Para el estado actual del proyecto, leé [NEXT_STEPS.md](NEXT_STEPS.md)** —
+> ese es el documento que se mantiene actualizado con cada commit.
+>
+> **Para quickstart del API**, leé [api/README.md](api/README.md).
+>
+> **Para deploy a producción**, leé [api/DEPLOY.md](api/DEPLOY.md).
+>
+> Este documento se mantiene como referencia histórica del plan y las
+> decisiones de diseño. No documenta el estado real del código.
+
+---
+
 ## Contexto
 
 Servicio comercial SaaS que expone el motor de facturación electrónica SIFEN Paraguay
@@ -11,13 +30,13 @@ que son los contribuyentes emisores con su propio RUC y certificado).
 
 ---
 
-## Estado actual (repo FE-PY)
+## Estado actual (snapshot del 13 abr — pre-implementación)
 
 Este repo contiene el **motor** — generación + validación + firma + envío. Ya está
 armado al 100% hasta el paso de firma. Lo único que bloquea validar end-to-end es
 conseguir un certificado `.p12` de prueba.
 
-| Componente | Estado |
+| Componente | Estado al 13/abr |
 |---|---|
 | `xmlgen` (generación XML v150) | ✓ |
 | Validación XSD pre/post firma (xmllint + xsd/ + xsd-unsigned/) | ✓ |
@@ -26,6 +45,10 @@ conseguir un certificado `.p12` de prueba.
 | `setapi` (envío SOAP SIFEN) | ✓ instalado, no probado |
 | `test-ui.js` pipeline completo | ✓ funcional hasta "Firmar" |
 | Cert `.p12` + CSC | ✗ **bloqueante** |
+
+**Actualización 14/abr:** todo el plan de Fase 2 de abajo se ejecutó en ~10 batches
+de desarrollo, más 1 batch de bug fixes tras la primera corrida E2E en Docker.
+Ver [NEXT_STEPS.md](NEXT_STEPS.md#historial-de-batches) para el historial completo.
 
 ---
 

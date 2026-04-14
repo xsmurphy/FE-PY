@@ -182,6 +182,72 @@ describe('cert service', () => {
       bundle.p12.ciphertext[0] ^= 0xff;
       expect(() => decryptCertBundle(bundle)).toThrow();
     });
+
+    it('detecta tampering del ciphertext del password', () => {
+      const p12 = generateTestP12({ ruc: '80012345-1', password: 'abc' });
+      const bundle = encryptCertBundle(p12, 'abc');
+      bundle.password.ciphertext[0] ^= 0xff;
+      expect(() => decryptCertBundle(bundle)).toThrow();
+    });
+
+    it('detecta tampering de la DEK cifrada', () => {
+      const p12 = generateTestP12({ ruc: '80012345-1', password: 'abc' });
+      const bundle = encryptCertBundle(p12, 'abc');
+      bundle.dek.ciphertext[0] ^= 0xff;
+      expect(() => decryptCertBundle(bundle)).toThrow();
+    });
+
+    /**
+     * Regression test: hasta batch 8 el cert bundle tenía DOS DEKs distintas
+     * (una por cada envelope independiente) pero solo se guardaba UNA en DB.
+     * Al reconstruir el bundle leyendo de DB, el password se descifraba con
+     * la DEK del p12 → falla criptográfica.
+     *
+     * Este test simula el round trip DB: serializa los campos como columnas,
+     * los reconstruye, y verifica que decryptCertBundle funciona.
+     */
+    it('round trip DB: serializar a columnas y reconstruir', () => {
+      const originalP12 = generateTestP12({ ruc: '80012345-1', password: 'top-secret' });
+      const bundle = encryptCertBundle(originalP12, 'top-secret');
+
+      // Simular INSERT en tenant_certs → serializamos cada campo
+      const dbRow = {
+        encryptedP12: bundle.p12.ciphertext,
+        ivP12: bundle.p12.iv,
+        tagP12: bundle.p12.tag,
+
+        encryptedPassword: bundle.password.ciphertext,
+        ivPassword: bundle.password.iv,
+        tagPassword: bundle.password.tag,
+
+        encryptedDek: bundle.dek.ciphertext,
+        ivDek: bundle.dek.iv,
+        tagDek: bundle.dek.tag,
+      };
+
+      // Simular SELECT y reconstruir bundle desde row
+      const reconstructed = {
+        p12: {
+          ciphertext: dbRow.encryptedP12,
+          iv: dbRow.ivP12,
+          tag: dbRow.tagP12,
+        },
+        password: {
+          ciphertext: dbRow.encryptedPassword,
+          iv: dbRow.ivPassword,
+          tag: dbRow.tagPassword,
+        },
+        dek: {
+          ciphertext: dbRow.encryptedDek,
+          iv: dbRow.ivDek,
+          tag: dbRow.tagDek,
+        },
+      };
+
+      const decrypted = decryptCertBundle(reconstructed);
+      expect(decrypted.p12.equals(originalP12)).toBe(true);
+      expect(decrypted.password).toBe('top-secret');
+    });
   });
 
   describe('end-to-end: parse + validate + encrypt + decrypt + reparse', () => {

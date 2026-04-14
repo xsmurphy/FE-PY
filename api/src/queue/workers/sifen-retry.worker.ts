@@ -106,17 +106,16 @@ export const createSifenRetryWorker = () => {
           ciphertext: certRow.encryptedP12,
           iv: certRow.ivP12,
           tag: certRow.tagP12,
-          encryptedDek: certRow.encryptedDek,
-          ivDek: certRow.ivDek,
-          tagDek: certRow.tagDek,
         },
         password: {
           ciphertext: certRow.encryptedPassword,
           iv: certRow.ivPassword,
           tag: certRow.tagPassword,
-          encryptedDek: certRow.encryptedDek,
-          ivDek: certRow.ivDek,
-          tagDek: certRow.tagDek,
+        },
+        dek: {
+          ciphertext: certRow.encryptedDek,
+          iv: certRow.ivDek,
+          tag: certRow.tagDek,
         },
       });
 

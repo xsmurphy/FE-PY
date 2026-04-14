@@ -106,12 +106,10 @@ export const tenantCertRoutes: FastifyPluginAsyncZod = async (app) => {
           ivPassword: bundle.password.iv,
           tagPassword: bundle.password.tag,
 
-          // La DEK de cada envelope es distinta — persistimos la del p12
-          // (la del password se guarda con encryptedDek compartido).
-          // Para simplificar, guardamos la DEK del p12 como la "dek del bundle".
-          encryptedDek: bundle.p12.encryptedDek,
-          ivDek: bundle.p12.ivDek,
-          tagDek: bundle.p12.tagDek,
+          // DEK única compartida para p12 + password
+          encryptedDek: bundle.dek.ciphertext,
+          ivDek: bundle.dek.iv,
+          tagDek: bundle.dek.tag,
 
           fingerprint: parsed.metadata.fingerprint,
           subjectCn: parsed.metadata.subjectCn,

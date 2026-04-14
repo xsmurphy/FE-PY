@@ -130,17 +130,16 @@ const loadTenantCertBundle = async (tenantId: string, companyId: string): Promis
       ciphertext: row.encryptedP12,
       iv: row.ivP12,
       tag: row.tagP12,
-      encryptedDek: row.encryptedDek,
-      ivDek: row.ivDek,
-      tagDek: row.tagDek,
     },
     password: {
       ciphertext: row.encryptedPassword,
       iv: row.ivPassword,
       tag: row.tagPassword,
-      encryptedDek: row.encryptedDek,
-      ivDek: row.ivDek,
-      tagDek: row.tagDek,
+    },
+    dek: {
+      ciphertext: row.encryptedDek,
+      iv: row.ivDek,
+      tag: row.tagDek,
     },
   };
 };

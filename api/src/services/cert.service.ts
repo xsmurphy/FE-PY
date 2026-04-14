@@ -18,14 +18,19 @@
  *   4. Wipe de buffers sensibles en memoria
  */
 import forge from 'node-forge';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
+import {
+  encryptWithKey,
+  decryptWithKey,
+  type EncryptedBlob,
+} from '../crypto/envelope.js';
+import { env } from '../config/env.js';
+import { BadRequestError, ValidationError } from '../lib/errors.js';
 
 const { pki, asn1, pkcs12 } = forge;
 type Asn1 = forge.asn1.Asn1;
 type Pkcs12Pfx = forge.pkcs12.Pkcs12Pfx;
 type Certificate = forge.pki.Certificate;
-import { envelopeEncrypt, envelopeDecrypt, type EnvelopeEncrypted } from '../crypto/envelope.js';
-import { BadRequestError, ValidationError } from '../lib/errors.js';
 
 export interface CertMetadata {
   fingerprint: string;
@@ -41,9 +46,21 @@ export interface ParsedCert {
   certPem?: string;
 }
 
+/**
+ * Bundle cifrado del cert: comparte UNA DEK para p12 y password.
+ *
+ * El schema DB `tenant_certs` tiene UNA sola columna encrypted_dek + iv_dek + tag_dek,
+ * y por eso acá usamos una DEK única y dos EncryptedBlob separados (uno para el p12,
+ * otro para la password). Ambos se descifran con la misma DEK.
+ *
+ * Esto es distinto del `envelopeEncrypt()` genérico que genera su propia DEK — para
+ * el cert bundle necesitamos control explícito de la DEK para que coincida con el
+ * schema.
+ */
 export interface EncryptedCertBundle {
-  p12: EnvelopeEncrypted;
-  password: EnvelopeEncrypted;
+  p12: EncryptedBlob;
+  password: EncryptedBlob;
+  dek: EncryptedBlob; // DEK cifrada con la KEK master
 }
 
 /**
@@ -190,35 +207,50 @@ export const assertRucMatches = (certRuc: string, tenantRuc: string): void => {
   }
 };
 
+const getKek = (): Buffer => Buffer.from(env.MASTER_KEY_BASE64, 'base64');
+
 /**
- * Cifra el .p12 y su password en memoria usando envelope encryption.
- * Los buffers originales se zero-ean al terminar.
+ * Cifra el .p12 y su password con UNA DEK compartida, y cifra la DEK con la KEK.
+ * Devuelve los 3 blobs (p12, password, dek) que el caller persiste en las
+ * columnas correspondientes de tenant_certs.
+ *
+ * Los buffers de input se zero-ean al terminar.
  */
 export const encryptCertBundle = (
   p12Buffer: Buffer,
   password: string,
 ): EncryptedCertBundle => {
+  const dek = randomBytes(32);
   const passwordBuffer = Buffer.from(password, 'utf8');
   try {
-    return {
-      p12: envelopeEncrypt(p12Buffer),
-      password: envelopeEncrypt(passwordBuffer),
-    };
+    const p12Blob = encryptWithKey(p12Buffer, dek);
+    const pwdBlob = encryptWithKey(passwordBuffer, dek);
+    const dekBlob = encryptWithKey(dek, getKek());
+    return { p12: p12Blob, password: pwdBlob, dek: dekBlob };
   } finally {
+    dek.fill(0);
     passwordBuffer.fill(0);
   }
 };
 
 /**
- * Descifra el bundle en memoria. Devuelve {p12, password} — el caller
- * es responsable de wipe-arlos después de usarlos.
+ * Descifra el bundle en memoria. Primero descifra la DEK con la KEK, luego usa la
+ * misma DEK para descifrar ambos blobs (p12 + password).
+ *
+ * La DEK se zera al terminar. El caller es responsable de wipe los buffers
+ * devueltos cuando termine de usarlos.
  */
 export const decryptCertBundle = (
   bundle: EncryptedCertBundle,
 ): { p12: Buffer; password: string } => {
-  const p12 = envelopeDecrypt(bundle.p12);
-  const passwordBuf = envelopeDecrypt(bundle.password);
-  const password = passwordBuf.toString('utf8');
-  passwordBuf.fill(0);
-  return { p12, password };
+  const dek = decryptWithKey(bundle.dek, getKek());
+  try {
+    const p12 = decryptWithKey(bundle.p12, dek);
+    const passwordBuf = decryptWithKey(bundle.password, dek);
+    const password = passwordBuf.toString('utf8');
+    passwordBuf.fill(0);
+    return { p12, password };
+  } finally {
+    dek.fill(0);
+  }
 };

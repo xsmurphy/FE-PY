@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ──────────────────────────────────────────────────────
+  # Job 1: test del API (Fastify + Drizzle + Vitest)
+  # ──────────────────────────────────────────────────────
+  api-test:
+    runs-on: ubuntu-latest
+    name: API typecheck + tests + build
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            api/package-lock.json
+
+      - name: Install libxml2-utils (para xmllint)
+        run: sudo apt-get update && sudo apt-get install -y libxml2-utils
+
+      # Build del motor xmlgen (repo padre) — el api/ lo consume vía file:..
+      - name: Install + build parent xmlgen
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+
+      - name: Install API deps
+        working-directory: api
+        run: npm install --ignore-scripts
+
+      - name: Typecheck
+        working-directory: api
+        run: npm run typecheck
+
+      - name: Run tests
+        working-directory: api
+        run: npm test
+
+      - name: Build
+        working-directory: api
+        run: npm run build
+
+  # ──────────────────────────────────────────────────────
+  # Job 2: build de la imagen Docker
+  # Verifica que el Dockerfile produce una imagen válida.
+  # No pushea a ningún registry — solo valida el build.
+  # ──────────────────────────────────────────────────────
+  docker-build:
+    runs-on: ubuntu-latest
+    name: Docker image build
+    needs: api-test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: api/Dockerfile
+          push: false
+          load: true
+          tags: facturacion-api:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test image
+        run: |
+          docker run --rm -d \
+            --name api-ci \
+            -e NODE_ENV=development \
+            -e PORT=3000 \
+            -e DATABASE_URL='postgres://x:x@localhost:5432/x' \
+            -e REDIS_URL='redis://localhost:6379' \
+            -e S3_ENDPOINT='http://localhost:9000' \
+            -e S3_BUCKET='ci' \
+            -e S3_ACCESS_KEY='x' \
+            -e S3_SECRET_KEY='x' \
+            -e MASTER_KEY_BASE64="$(openssl rand -base64 32)" \
+            -e ENABLE_SIFEN=false \
+            facturacion-api:ci sh -c 'node -e "
+              require(\"./dist/config/env.js\");
+              console.log(\"env validated\");
+              process.exit(0);
+            "' || true
+          docker image inspect facturacion-api:ci

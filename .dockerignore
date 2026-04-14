@@ -1,0 +1,36 @@
+# Artefactos de build y deps
+node_modules
+api/node_modules
+api/dist
+dist
+coverage
+api/coverage
+
+# Secrets y env
+.env
+.env.*
+api/.env
+api/.env.*
+
+# VCS y tooling
+.git
+.gitignore
+.github
+.vscode
+.idea
+.DS_Store
+
+# Graphify MCP (machine-specific)
+graphify-out
+
+# Test artifacts
+test-local-output.xml
+*.log
+
+# Docs y planning (no afectan el build)
+PLAN.md
+*.md
+
+# Scripts locales de testing manual
+test-ui.js
+test-local.js

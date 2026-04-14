@@ -57,10 +57,21 @@ export interface CancelacionInput {
   motivo: string;
 }
 
+export interface InutilizacionInput {
+  companyId: string;
+  tenant: Tenant;
+  tipoDocumento: number; // 1=FE, 5=NC, 6=ND, 7=NR
+  establecimiento: string;
+  punto: string;
+  desde: number;
+  hasta: number;
+  motivo: string;
+}
+
 export interface EventoResult {
   id: string;
-  cdc: string;
-  tipoEvento: 'cancelacion';
+  cdc: string | null;
+  tipoEvento: 'cancelacion' | 'inutilizacion';
   estado: 'pendiente' | 'enviado' | 'aprobado' | 'rechazado' | 'error';
   xmlStorageKey: string | null;
   sifenCodigoRespuesta?: string;
@@ -321,6 +332,150 @@ export const cancelarDocumento = async (input: CancelacionInput): Promise<Evento
       id: updated.id,
       cdc,
       tipoEvento: 'cancelacion',
+      estado: updated.estado,
+      xmlStorageKey: updated.xmlStorageKey,
+      sifenCodigoRespuesta,
+      sifenMensaje,
+      signed,
+      sentToSifen,
+      createdAt: updated.createdAt,
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await db
+      .update(eventos)
+      .set({ estado: 'error', errorMessage: msg })
+      .where(eq(eventos.id, eventoRow.id));
+    throw err;
+  }
+};
+
+// ═════════════════════════════════════════════════════════════════
+// Pipeline de inutilización
+//
+// Inutiliza un rango contiguo de números [desde..hasta] dentro de un
+// (tipoDocumento, establecimiento, punto). SIFEN marca esos números como
+// "no usables" y libera al emisor de la obligación de reportarlos.
+//
+// No lleva CDC asociado porque el rango puede no corresponder a documentos
+// existentes — la inutilización es para números que NO se van a emitir
+// (por error de numeración, documento arruinado, etc.)
+// ═════════════════════════════════════════════════════════════════
+
+export const inutilizarRango = async (input: InutilizacionInput): Promise<EventoResult> => {
+  const { companyId, tenant, tipoDocumento, establecimiento, punto, desde, hasta, motivo } = input;
+
+  // Validaciones de negocio
+  if (motivo.length < 10 || motivo.length > 500) {
+    throw new BadRequestError('El motivo debe tener entre 10 y 500 caracteres');
+  }
+  if (desde < 1 || hasta < 1) {
+    throw new BadRequestError('Los números desde/hasta deben ser positivos');
+  }
+  if (desde > hasta) {
+    throw new BadRequestError('desde no puede ser mayor que hasta');
+  }
+  if (hasta - desde > 9999) {
+    throw new BadRequestError('El rango de inutilización no puede exceder 10.000 números en una sola operación');
+  }
+  if (![1, 4, 5, 6, 7].includes(tipoDocumento)) {
+    throw new BadRequestError('tipoDocumento debe ser 1 (FE), 4 (Autofactura), 5 (NC), 6 (ND) o 7 (Remisión)');
+  }
+
+  // Insertar evento con documentCdc=null (es un rango, no un CDC)
+  const [eventoRow] = await db
+    .insert(eventos)
+    .values({
+      companyId,
+      tenantId: tenant.id,
+      documentCdc: null,
+      tipoEvento: 'inutilizacion',
+      requestJson: { tipoDocumento, establecimiento, punto, desde, hasta, motivo },
+      estado: 'pendiente',
+    })
+    .returning();
+
+  try {
+    const params = buildParamsFromTenant(tenant);
+    const eventoData = { tipoDocumento, establecimiento, punto, desde, hasta, motivo };
+    const sifenEventoId = 1;
+
+    const xml: string = await xmlgen.generateXMLEventoInutilizacion(
+      sifenEventoId,
+      params,
+      eventoData,
+    );
+
+    let xmlFinal = xml;
+    let signed = false;
+    let sentToSifen = false;
+    let estado: EventoRow['estado'] = 'pendiente';
+    let sifenCodigoRespuesta: string | undefined;
+    let sifenMensaje: string | undefined;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let sifenResponseRaw: Record<string, any> | undefined;
+
+    if (env.ENABLE_SIFEN) {
+      const certBundle = await loadTenantCertBundle(tenant.id, companyId);
+      xmlFinal = await signEventoWithBundle(xml, certBundle);
+      signed = true;
+
+      try {
+        const decrypted = decryptCertBundle(certBundle);
+        const tmpCertPath = join(tmpdir(), `sifen-inut-${randomUUID()}.p12`);
+        await writeFile(tmpCertPath, decrypted.p12, { mode: 0o600 });
+
+        try {
+          const response = await setapi.evento(
+            sifenEventoId,
+            xmlFinal,
+            tenant.env,
+            tmpCertPath,
+            decrypted.password,
+          );
+          sifenResponseRaw =
+            typeof response === 'string' ? { raw: response } : (response as Record<string, unknown>);
+          sentToSifen = true;
+
+          sifenCodigoRespuesta = extractSifenCodigo(sifenResponseRaw);
+          sifenMensaje = extractSifenMensaje(sifenResponseRaw);
+
+          if (
+            sifenCodigoRespuesta === '0260' ||
+            sifenCodigoRespuesta === '1001' ||
+            sifenCodigoRespuesta === '1002'
+          ) {
+            estado = 'aprobado';
+          } else {
+            estado = 'rechazado';
+          }
+        } finally {
+          decrypted.p12.fill(0);
+          await unlink(tmpCertPath).catch(() => {});
+        }
+      } catch (sifenErr) {
+        const msg = sifenErr instanceof Error ? sifenErr.message : String(sifenErr);
+        throw new SifenError(`Error al enviar inutilización a SIFEN: ${msg}`);
+      }
+    }
+
+    const xmlKey = storageKey.evento(companyId, tenant.id, eventoRow.id);
+    await uploadObject(xmlKey, xmlFinal, { contentType: 'application/xml' });
+
+    const [updated] = await db
+      .update(eventos)
+      .set({
+        xmlStorageKey: xmlKey,
+        estado,
+        sifenResponseRaw,
+      })
+      .where(eq(eventos.id, eventoRow.id))
+      .returning();
+
+    return {
+      id: updated.id,
+      cdc: null,
+      tipoEvento: 'inutilizacion',
       estado: updated.estado,
       xmlStorageKey: updated.xmlStorageKey,
       sifenCodigoRespuesta,

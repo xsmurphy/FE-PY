@@ -34,6 +34,19 @@ const envSchema = z.object({
     .default('false')
     .transform((v) => v === 'true'),
 
+  // KUDE (PDF) gated por separado porque requiere Java runtime en el container
+  // y el paquete facturacionelectronicapy-kude tiene una API inconsistente que
+  // obliga a pasar por un workaround. Ver kude.service.ts.
+  ENABLE_KUDE: z
+    .string()
+    .default('false')
+    .transform((v) => v === 'true'),
+  JAVA_PATH: z.string().default('/usr/bin/java'),
+
+  // Cert expiration alerts cron
+  CERT_EXPIRATION_CHECK_INTERVAL_MS: z.coerce.number().int().positive().default(24 * 60 * 60 * 1000),
+  CERT_EXPIRATION_WARNING_DAYS: z.coerce.number().int().positive().default(30),
+
   // CORS: comma-separated list of allowed origins. '*' = allow all.
   CORS_ORIGINS: z.string().default('*'),
 

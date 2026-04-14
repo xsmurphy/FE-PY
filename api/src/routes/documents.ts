@@ -34,9 +34,15 @@ const setapi = require('facturacionelectronicapy-setapi').default;
 const createDeBodySchema = z
   .object({
     tipoDocumento: z
-      .union([z.literal(1), z.literal(5)])
+      .union([
+        z.literal(1), // Factura Electrónica
+        z.literal(4), // Autofactura
+        z.literal(5), // Nota de Crédito Electrónica
+        z.literal(6), // Nota de Débito Electrónica
+        z.literal(7), // Nota de Remisión Electrónica
+      ])
       .default(1)
-      .describe('1=Factura Electrónica, 5=Nota de Crédito'),
+      .describe('1=FE, 4=Autofactura, 5=NC, 6=ND, 7=NR'),
     establecimiento: z.string().regex(/^\d{1,3}$/),
     punto: z.string().regex(/^\d{1,3}$/),
     numero: z.string().regex(/^\d{1,7}$/).optional(),
@@ -68,6 +74,7 @@ const deResponseSchema = z.object({
   montoTotal: z.string(),
   fechaEmision: z.string(),
   xmlUrl: z.string().nullable(),
+  kudeUrl: z.string().nullable(),
   signed: z.boolean(),
   sentToSifen: z.boolean(),
   cancelled: z.boolean(),
@@ -98,11 +105,21 @@ const documentListItemSchema = z.object({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const serializeDocument = async (row: any, withPresignedUrl: boolean) => {
   let xmlUrl: string | null = null;
-  if (row.xmlStorageKey && withPresignedUrl) {
-    try {
-      xmlUrl = await getPresignedDownloadUrl(row.xmlStorageKey, 900);
-    } catch {
-      xmlUrl = null;
+  let kudeUrl: string | null = null;
+  if (withPresignedUrl) {
+    if (row.xmlStorageKey) {
+      try {
+        xmlUrl = await getPresignedDownloadUrl(row.xmlStorageKey, 900);
+      } catch {
+        xmlUrl = null;
+      }
+    }
+    if (row.kudeStorageKey) {
+      try {
+        kudeUrl = await getPresignedDownloadUrl(row.kudeStorageKey, 900);
+      } catch {
+        kudeUrl = null;
+      }
     }
   }
   const cancelled = row.cdc ? await isDocumentCancelled(row.tenantId, row.cdc) : false;
@@ -118,6 +135,7 @@ const serializeDocument = async (row: any, withPresignedUrl: boolean) => {
     montoTotal: row.montoTotal,
     fechaEmision: row.fechaEmision.toISOString(),
     xmlUrl,
+    kudeUrl,
     signed: !!row.sifenResponseRaw || row.estado === 'aprobado',
     sentToSifen: !!row.sifenResponseRaw,
     cancelled,
@@ -271,6 +289,54 @@ export const documentRoutes: FastifyPluginAsyncZod = async (app) => {
 
       if (!row) throw new NotFoundError('Document');
       return serializeDocument(row, true);
+    },
+  );
+
+  // ─────────────────────────────────────────────────────
+  // GET /v1/tenants/:tenant_id/de/:cdc/kude — descarga PDF KUDE
+  // ─────────────────────────────────────────────────────
+  app.get(
+    '/tenants/:tenant_id/de/:cdc/kude',
+    {
+      preHandler: [requireAuth, requireTenantScope],
+      schema: {
+        tags: ['documents'],
+        summary: 'Descargar el PDF KUDE de un documento',
+        description:
+          'Devuelve el PDF visual (KUDE) del documento. Requiere que KUDE haya ' +
+          'sido generado al emitir (ENABLE_KUDE=true). Si no existe, 404.',
+        security: [{ bearerAuth: [] }],
+        params: z.object({
+          tenant_id: z.string().uuid(),
+          cdc: z.string().length(44),
+        }),
+      },
+    },
+    async (request, reply) => {
+      const [row] = await db
+        .select({ kudeKey: documents.kudeStorageKey })
+        .from(documents)
+        .where(
+          and(
+            eq(documents.companyId, request.company!.id),
+            eq(documents.tenantId, request.tenant!.id),
+            eq(documents.cdc, request.params.cdc),
+          ),
+        )
+        .limit(1);
+
+      if (!row) throw new NotFoundError('Document');
+      if (!row.kudeKey) {
+        throw new NotFoundError(
+          'KUDE not available for this document — was it generated with ENABLE_KUDE=true?',
+        );
+      }
+
+      const pdfBuffer = await getObject(row.kudeKey);
+      return reply
+        .header('content-type', 'application/pdf')
+        .header('content-disposition', `attachment; filename="${request.params.cdc}.pdf"`)
+        .send(pdfBuffer);
     },
   );
 

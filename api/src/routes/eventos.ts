@@ -6,11 +6,11 @@ import { eventos } from '../db/schema.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireTenantScope } from '../middleware/tenant-scope.js';
 import { idempotencyCheck, idempotencyPersist } from '../middleware/idempotency.js';
-import { cancelarDocumento } from '../services/evento.service.js';
+import { cancelarDocumento, inutilizarRango } from '../services/evento.service.js';
 
 const eventoResponseSchema = z.object({
   id: z.string().uuid(),
-  cdc: z.string().length(44),
+  cdc: z.string().length(44).nullable(),
   tipoEvento: z.enum([
     'cancelacion',
     'inutilizacion',
@@ -75,6 +75,77 @@ export const eventoRoutes: FastifyPluginAsyncZod = async (app) => {
         companyId: request.company!.id,
         tenant: request.tenant!,
         cdc: request.body.cdc,
+        motivo: request.body.motivo,
+      });
+
+      return reply.status(201).send({
+        id: result.id,
+        cdc: result.cdc ?? null,
+        tipoEvento: result.tipoEvento,
+        estado: result.estado,
+        xmlStorageKey: result.xmlStorageKey,
+        sifenCodigoRespuesta: result.sifenCodigoRespuesta,
+        sifenMensaje: result.sifenMensaje,
+        signed: result.signed,
+        sentToSifen: result.sentToSifen,
+        createdAt: result.createdAt.toISOString(),
+      });
+    },
+  );
+
+  // ─────────────────────────────────────────────────────
+  // POST /v1/tenants/:tenant_id/eventos/inutilizacion
+  //
+  // Inutiliza un rango [desde..hasta] de numeración para un
+  // (tipoDocumento, establecimiento, punto). SIFEN libera al emisor
+  // de la obligación de reportar esos números. Útil cuando se saltea
+  // numeración por error o un documento fue arruinado antes de firmar.
+  // ─────────────────────────────────────────────────────
+  app.post(
+    '/tenants/:tenant_id/eventos/inutilizacion',
+    {
+      preHandler: [requireAuth, requireTenantScope, idempotencyCheck],
+      onSend: [idempotencyPersist],
+      schema: {
+        tags: ['eventos'],
+        summary: 'Inutilizar un rango de numeración',
+        description:
+          'Marca como inutilizados los números entre desde y hasta (inclusive) ' +
+          'dentro del tipoDocumento, establecimiento y punto dados. Requiere motivo ' +
+          'entre 10 y 500 caracteres. Max 10.000 números por operación.',
+        security: [{ bearerAuth: [] }],
+        params: z.object({ tenant_id: z.string().uuid() }),
+        headers: z.object({
+          'idempotency-key': z.string().min(8).max(256).optional(),
+        }),
+        body: z.object({
+          tipoDocumento: z.union([
+            z.literal(1),
+            z.literal(4),
+            z.literal(5),
+            z.literal(6),
+            z.literal(7),
+          ]),
+          establecimiento: z.string().regex(/^\d{1,3}$/),
+          punto: z.string().regex(/^\d{1,3}$/),
+          desde: z.number().int().positive(),
+          hasta: z.number().int().positive(),
+          motivo: z.string().min(10).max(500),
+        }),
+        response: {
+          201: eventoResponseSchema,
+        },
+      },
+    },
+    async (request, reply) => {
+      const result = await inutilizarRango({
+        companyId: request.company!.id,
+        tenant: request.tenant!,
+        tipoDocumento: request.body.tipoDocumento,
+        establecimiento: request.body.establecimiento.padStart(3, '0'),
+        punto: request.body.punto.padStart(3, '0'),
+        desde: request.body.desde,
+        hasta: request.body.hasta,
         motivo: request.body.motivo,
       });
 

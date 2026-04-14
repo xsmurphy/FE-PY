@@ -53,7 +53,11 @@ RUN npm run build
 # Stage 3: imagen runtime final
 # ============================================================================
 FROM node:20-alpine AS runtime
-RUN apk add --no-cache libxml2-utils tini
+# libxml2-utils: xmllint para validación XSD
+# openjdk17-jre-headless: requerido por facturacionelectronicapy-kude (JAR interno)
+# tini: init process para manejo correcto de señales
+RUN apk add --no-cache libxml2-utils openjdk17-jre-headless tini
+ENV JAVA_PATH=/usr/lib/jvm/default-jvm/bin/java
 
 # Motor padre (solo lo necesario para runtime)
 WORKDIR /parent

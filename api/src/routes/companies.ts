@@ -83,6 +83,67 @@ export const companyRoutes: FastifyPluginAsyncZod = async (app) => {
   );
 
   // ─────────────────────────────────────────────────────
+  // POST /v1/companies/me/keys/rotate — rotar API key
+  //
+  // Genera una nueva API key y la devuelve en plaintext UNA sola vez.
+  // La key vieja deja de funcionar inmediatamente — si el cliente tiene
+  // requests en vuelo con la vieja, van a fallar con 401. Coordinar
+  // con el cliente antes de rotar.
+  // ─────────────────────────────────────────────────────
+  app.post(
+    '/companies/me/keys/rotate',
+    {
+      preHandler: requireAuth,
+      schema: {
+        tags: ['companies'],
+        summary: 'Rotar el API key master de la company',
+        description:
+          'Genera una nueva API key. La respuesta incluye la key en plaintext — ' +
+          'guardarla inmediatamente. La key anterior queda invalidada al instante.',
+        security: [{ bearerAuth: [] }],
+        response: {
+          200: z.object({
+            id: z.string().uuid(),
+            apiKey: z.string().describe('Nueva key en plaintext — SOLO visible una vez'),
+            apiKeyPrefix: z.string(),
+            rotatedAt: z.string(),
+          }),
+        },
+      },
+    },
+    async (request) => {
+      const companyId = request.company!.id;
+      const newKey = generateApiKey();
+
+      const [updated] = await db
+        .update(companies)
+        .set({
+          apiKeyHash: newKey.hash,
+          apiKeyPrefix: newKey.prefix,
+          updatedAt: new Date(),
+        })
+        .where(eq(companies.id, companyId))
+        .returning({
+          id: companies.id,
+          apiKeyPrefix: companies.apiKeyPrefix,
+          updatedAt: companies.updatedAt,
+        });
+
+      request.log.warn(
+        { companyId, newKeyPrefix: newKey.prefix },
+        'API key rotated — old key invalidated',
+      );
+
+      return {
+        id: updated.id,
+        apiKey: newKey.plaintext,
+        apiKeyPrefix: updated.apiKeyPrefix,
+        rotatedAt: updated.updatedAt.toISOString(),
+      };
+    },
+  );
+
+  // ─────────────────────────────────────────────────────
   // GET /v1/companies/me — perfil (REQUIERE AUTH)
   // ─────────────────────────────────────────────────────
   app.get(

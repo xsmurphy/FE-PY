@@ -32,6 +32,7 @@ import {
   type EncryptedCertBundle,
 } from './cert.service.js';
 import { decryptTenantCsc } from './csc.service.js';
+import { generateKudePdf } from './kude.service.js';
 import { uploadObject, storageKey } from '../storage/s3.js';
 import { enqueueSifenRetry } from '../queue/queues.js';
 import { env } from '../config/env.js';
@@ -177,10 +178,11 @@ export const createDeDocument = async (input: CreateDeInput): Promise<CreateDeRe
   const { tenant, body, companyId } = input;
   const tipoDocumento = Number(body.tipoDocumento ?? 1);
 
-  // Validación rápida: tipo soportado en MVP
-  if (tipoDocumento !== 1 && tipoDocumento !== 5) {
+  // Validación rápida: tipos soportados (FE, Autofactura, NC, ND, NR)
+  // El motor xmlgen soporta todos — acá validamos que sea uno conocido
+  if (![1, 4, 5, 6, 7].includes(tipoDocumento)) {
     throw new BadRequestError(
-      'Solo se soportan Factura (tipoDocumento=1) y Nota de Crédito (tipoDocumento=5) en esta versión',
+      `tipoDocumento=${tipoDocumento} no soportado. Válidos: 1=FE, 4=Autofactura, 5=NC, 6=ND, 7=NR`,
     );
   }
 
@@ -300,6 +302,20 @@ export const createDeDocument = async (input: CreateDeInput): Promise<CreateDeRe
     const xmlKey = storageKey.xml(companyId, tenant.id, cdc);
     await uploadObject(xmlKey, xmlFinal, { contentType: 'application/xml' });
 
+    // 7b. Generar KUDE (PDF visual) — opcional, gated por ENABLE_KUDE.
+    //     Requiere XML firmado con QR. Si falla, logueamos y seguimos —
+    //     el KUDE se puede regenerar después desde el XML persistido.
+    let kudeKey: string | null = null;
+    if (env.ENABLE_SIFEN && env.ENABLE_KUDE) {
+      const kudeResult = await generateKudePdf(xmlFinal);
+      if (kudeResult.ok && kudeResult.pdfBuffer) {
+        kudeKey = storageKey.kude(companyId, tenant.id, cdc);
+        await uploadObject(kudeKey, kudeResult.pdfBuffer, { contentType: 'application/pdf' });
+      }
+      // Si kudeResult.ok === false, no es error — el cliente puede pedir
+      // regeneración después vía un endpoint dedicado (TODO en Fase 3)
+    }
+
     // Guardamos el CDC y xml_storage_key ANTES de intentar enviar, así si el
     // envío falla el retry worker puede encontrar el document por CDC.
     await db
@@ -307,6 +323,7 @@ export const createDeDocument = async (input: CreateDeInput): Promise<CreateDeRe
       .set({
         cdc,
         xmlStorageKey: xmlKey,
+        kudeStorageKey: kudeKey,
         estado: env.ENABLE_SIFEN ? 'enviando' : 'pendiente',
         updatedAt: new Date(),
       })

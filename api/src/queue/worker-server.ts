@@ -13,6 +13,7 @@ import { createSifenRetryWorker } from './workers/sifen-retry.worker.js';
 import { closeAllQueues } from './queues.js';
 import { closeRedisConnection } from './connection.js';
 import { startIdempotencyGc, stopIdempotencyGc } from './gc.js';
+import { startCertExpirationCheck, stopCertExpirationCheck } from './cert-expiration-check.js';
 import { initSentry } from '../lib/sentry.js';
 
 const log = (msg: string, extra?: Record<string, unknown>) => {
@@ -28,13 +29,15 @@ const main = async () => {
   const retryWorker = createSifenRetryWorker();
 
   startIdempotencyGc(log);
+  startCertExpirationCheck(log);
 
-  log('workers ready: sifen-batch, sifen-retry, gc-idempotency');
+  log('workers ready: sifen-batch, sifen-retry, gc-idempotency, cert-expiration');
 
   const shutdown = async (signal: string) => {
     log(`received ${signal}, shutting down...`);
     try {
       stopIdempotencyGc();
+      stopCertExpirationCheck();
       await Promise.allSettled([batchWorker.close(), retryWorker.close()]);
       await closeAllQueues();
       await closeRedisConnection();

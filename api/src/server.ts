@@ -1,5 +1,6 @@
 import { buildApp } from './app.js';
 import { env } from './config/env.js';
+import { startIdempotencyGc, stopIdempotencyGc } from './queue/gc.js';
 
 const start = async (): Promise<void> => {
   const app = await buildApp();
@@ -10,6 +11,8 @@ const start = async (): Promise<void> => {
       { port: env.PORT, env: env.NODE_ENV, sifen: env.ENABLE_SIFEN },
       `facturacion-api listening on :${env.PORT}`,
     );
+    // GC de idempotency en el server también (fallback si no hay worker)
+    startIdempotencyGc((msg, extra) => app.log.info(extra ?? {}, msg));
   } catch (err) {
     app.log.fatal({ err }, 'Failed to start server');
     process.exit(1);
@@ -19,6 +22,7 @@ const start = async (): Promise<void> => {
   const shutdown = async (signal: string): Promise<void> => {
     app.log.info({ signal }, 'Shutting down...');
     try {
+      stopIdempotencyGc();
       await app.close();
       process.exit(0);
     } catch (err) {

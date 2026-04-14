@@ -4,37 +4,56 @@
  * Se usa cuando un documento fue generado y firmado pero el envío a SIFEN
  * falló por error transitorio (timeout, 5xx, SIFEN caído).
  *
- * Por ahora es un stub básico: re-consulta el estado en SIFEN vía setapi.consulta
- * y actualiza el document row. El re-envío automático de XMLs completos queda
- * pendiente — requiere persistir el XML firmado en S3 antes del envío y
- * recuperarlo acá, lo cual ya hace createDeDocument cuando termina OK.
+ * Pipeline del retry:
+ *   1. Cargar el document row + cert del tenant
+ *   2. Si ya está aprobado/rechazado, no reintentar
+ *   3. Descargar el XML firmado desde S3 (xml_storage_key)
+ *   4. Re-enviar con setapi.recibe
+ *   5. Parsear respuesta y actualizar document row
  *
- * MVP: retry es "eventualmente consulta y actualiza estado". Si el cliente
- * quiere forzar reenvío completo, usa POST /de/:cdc/consulta manualmente.
+ * Cada intento tiene timeout corto — BullMQ maneja los reintentos del job
+ * con backoff exponencial.
  */
 import { Worker, type Job } from 'bullmq';
+import { createRequire } from 'node:module';
+import { writeFile, unlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../../db/index.js';
-import { documents, tenants } from '../../db/schema.js';
+import { documents, tenants, tenantCerts } from '../../db/schema.js';
+import { decryptCertBundle } from '../../services/cert.service.js';
+import { getObject } from '../../storage/s3.js';
 import { getRedisConnection } from '../connection.js';
 import type { SifenRetryJobData } from '../queues.js';
 import { env } from '../../config/env.js';
 
+const require = createRequire(import.meta.url);
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const setapi = require('facturacionelectronicapy-setapi').default;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const extractCodigo = (r: Record<string, any>): string | undefined =>
+  r?.dCodRes ?? r?.gResProcDE?.dCodRes ?? r?.rResEnviDe?.gResProcDE?.dCodRes;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const extractMensaje = (r: Record<string, any>): string | undefined =>
+  r?.dMsgRes ?? r?.gResProcDE?.dMsgRes ?? r?.rResEnviDe?.gResProcDE?.dMsgRes;
+
 export const createSifenRetryWorker = () => {
-  const worker = new Worker<SifenRetryJobData, { estado: string }>(
+  const worker = new Worker<SifenRetryJobData, { estado: string; codigo?: string }>(
     'sifen-retry',
     async (job: Job<SifenRetryJobData>) => {
       const { documentId, companyId, tenantId, cdc } = job.data;
       job.log(`[retry ${documentId}] intento ${job.attemptsMade + 1}`);
 
       if (!env.ENABLE_SIFEN) {
-        // Sin SIFEN habilitado no tiene sentido reintentar — marcamos como
-        // pendiente a la espera de flip del flag.
         job.log(`[retry ${documentId}] ENABLE_SIFEN=false — skip`);
         return { estado: 'pendiente' };
       }
 
-      // Cargar documento + tenant para verificar que sigan existiendo
+      // Cargar documento
       const [doc] = await db
         .select()
         .from(documents)
@@ -48,15 +67,19 @@ export const createSifenRetryWorker = () => {
         )
         .limit(1);
 
-      if (!doc) {
-        throw new Error(`Document ${documentId} not found`);
-      }
+      if (!doc) throw new Error(`Document ${documentId} not found`);
 
-      // Si ya está aprobado o rechazado, no tiene sentido reintentar
+      // Ya está en estado terminal — nada que reintentar
       if (doc.estado === 'aprobado' || doc.estado === 'rechazado') {
         return { estado: doc.estado };
       }
 
+      // Necesitamos el XML firmado persistido
+      if (!doc.xmlStorageKey) {
+        throw new Error(`Document ${documentId} has no xmlStorageKey — cannot resend`);
+      }
+
+      // Cargar tenant + cert
       const [tenant] = await db
         .select()
         .from(tenants)
@@ -64,14 +87,97 @@ export const createSifenRetryWorker = () => {
         .limit(1);
       if (!tenant) throw new Error(`Tenant ${tenantId} not found`);
 
-      // TODO (Fase 3): implementar re-consulta real vía setapi.consulta.
-      // Por ahora solo marcamos como "pendiente" y dejamos que el cliente
-      // fuerce vía POST /de/:cdc/consulta cuando lo necesite.
-      return { estado: doc.estado };
+      const [certRow] = await db
+        .select()
+        .from(tenantCerts)
+        .where(and(eq(tenantCerts.tenantId, tenantId), eq(tenantCerts.companyId, companyId)))
+        .limit(1);
+      if (!certRow) throw new Error(`Certificate for tenant ${tenantId} not found`);
+      if (certRow.revokedAt) throw new Error('Certificate is revoked');
+      if (certRow.notAfter < new Date()) throw new Error('Certificate is expired');
+
+      // Descargar XML firmado desde S3
+      const xmlBuffer = await getObject(doc.xmlStorageKey);
+      const xml = xmlBuffer.toString('utf8');
+
+      // Descifrar cert para autenticar con SIFEN
+      const decrypted = decryptCertBundle({
+        p12: {
+          ciphertext: certRow.encryptedP12,
+          iv: certRow.ivP12,
+          tag: certRow.tagP12,
+          encryptedDek: certRow.encryptedDek,
+          ivDek: certRow.ivDek,
+          tagDek: certRow.tagDek,
+        },
+        password: {
+          ciphertext: certRow.encryptedPassword,
+          iv: certRow.ivPassword,
+          tag: certRow.tagPassword,
+          encryptedDek: certRow.encryptedDek,
+          ivDek: certRow.ivDek,
+          tagDek: certRow.tagDek,
+        },
+      });
+
+      const tmpCertPath = join(tmpdir(), `sifen-retry-${randomUUID()}.p12`);
+
+      try {
+        await writeFile(tmpCertPath, decrypted.p12, { mode: 0o600 });
+        const requestId = Number(Date.now() % 1_000_000);
+
+        const response = await setapi.recibe(
+          requestId,
+          xml,
+          tenant.env,
+          tmpCertPath,
+          decrypted.password,
+        );
+        const sifenResponseRaw: Record<string, unknown> =
+          typeof response === 'string'
+            ? { raw: response }
+            : (response as Record<string, unknown>);
+
+        const codigo = extractCodigo(sifenResponseRaw);
+        const mensaje = extractMensaje(sifenResponseRaw);
+
+        type DocumentEstado =
+          | 'pendiente'
+          | 'generando'
+          | 'firmando'
+          | 'enviando'
+          | 'aprobado'
+          | 'rechazado'
+          | 'error';
+        let nuevoEstado: DocumentEstado = doc.estado as DocumentEstado;
+        if (codigo === '0260' || codigo === '0261' || codigo === '0262') {
+          nuevoEstado = 'aprobado';
+        } else if (codigo) {
+          nuevoEstado = 'rechazado';
+        }
+
+        await db
+          .update(documents)
+          .set({
+            estado: nuevoEstado,
+            sifenResponseRaw,
+            sifenCodigoRespuesta: codigo ?? doc.sifenCodigoRespuesta,
+            sifenMensaje: mensaje ?? doc.sifenMensaje,
+            retries: (doc.retries ?? 0) + 1,
+            updatedAt: new Date(),
+          })
+          .where(eq(documents.id, documentId));
+
+        job.log(`[retry ${documentId}] estado=${nuevoEstado} codigo=${codigo ?? '-'}`);
+        return { estado: nuevoEstado, codigo };
+      } finally {
+        decrypted.p12.fill(0);
+        await unlink(tmpCertPath).catch(() => {});
+      }
     },
     {
       connection: getRedisConnection(),
-      concurrency: 2, // conservador — es network-bound a SIFEN
+      concurrency: 2, // conservador — network-bound a SIFEN
     },
   );
 
@@ -82,7 +188,9 @@ export const createSifenRetryWorker = () => {
 
   worker.on('failed', (job, err) => {
     // eslint-disable-next-line no-console
-    console.error(`[sifen-retry] ✗ job=${job?.id} err=${err.message}`);
+    console.error(
+      `[sifen-retry] ✗ job=${job?.id} attempt=${job?.attemptsMade} err=${err.message}`,
+    );
   });
 
   return worker;

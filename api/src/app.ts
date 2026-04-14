@@ -2,9 +2,19 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import multipart from '@fastify/multipart';
-import { serializerCompiler, validatorCompiler, type ZodTypeProvider } from 'fastify-type-provider-zod';
+import rateLimit from '@fastify/rate-limit';
+import swagger from '@fastify/swagger';
+import swaggerUi from '@fastify/swagger-ui';
+import {
+  serializerCompiler,
+  validatorCompiler,
+  jsonSchemaTransform,
+  type ZodTypeProvider,
+} from 'fastify-type-provider-zod';
 import { env } from './config/env.js';
+import { initSentry, captureException } from './lib/sentry.js';
 import { registerErrorHandler } from './middleware/error-handler.js';
+import { registerAuditLog } from './middleware/audit-log.js';
 import { healthRoutes } from './routes/health.js';
 import { companyRoutes } from './routes/companies.js';
 import { tenantRoutes } from './routes/tenants.js';
@@ -13,8 +23,18 @@ import { tenantCscRoutes } from './routes/tenant-csc.js';
 import { documentRoutes } from './routes/documents.js';
 import { eventoRoutes } from './routes/eventos.js';
 import { batchRoutes } from './routes/batches.js';
+import { consultaRoutes } from './routes/consultas.js';
+
+const parseCorsOrigins = (raw: string): string[] | boolean => {
+  const trimmed = raw.trim();
+  if (trimmed === '*' || trimmed === '') return true;
+  return trimmed.split(',').map((s) => s.trim()).filter(Boolean);
+};
 
 export const buildApp = async () => {
+  // Sentry antes que nada — si algo revienta en el bootstrap queremos saberlo
+  initSentry();
+
   const app = Fastify({
     logger: {
       level: env.LOG_LEVEL,
@@ -48,27 +68,111 @@ export const buildApp = async () => {
     trustProxy: true,
   }).withTypeProvider<ZodTypeProvider>();
 
-  // Zod compilers para schemas de request/response
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
 
+  // ────────────────────────────────────────────
   // Plugins de seguridad
+  // ────────────────────────────────────────────
   await app.register(helmet, { contentSecurityPolicy: false });
-  await app.register(cors, { origin: true });
+  await app.register(cors, { origin: parseCorsOrigins(env.CORS_ORIGINS) });
+
+  // Rate limiting — clave por company_id si está autenticado, si no por IP.
+  // Se aplica GLOBALMENTE después del auth, así que rutas no-auth usan IP.
+  await app.register(rateLimit, {
+    max: env.RATE_LIMIT_MAX,
+    timeWindow: env.RATE_LIMIT_WINDOW_MS,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    keyGenerator: (req: any) => (req.company?.id ?? req.ip) as string,
+    errorResponseBuilder: (_req, context) => ({
+      error: {
+        code: 'rate_limit_exceeded',
+        message: `Too many requests — limit ${context.max} per ${context.after}`,
+        details: { retryAfter: context.ttl },
+      },
+    }),
+  });
 
   // Multipart para upload de certs .p12
   await app.register(multipart, {
     limits: {
-      fileSize: 1024 * 1024 * 5, // 5 MB por archivo (un .p12 típico es ~4 KB)
+      fileSize: 1024 * 1024 * 5, // 5 MB
       files: 1,
-      fields: 5,
+      fields: 10,
     },
   });
 
-  // Error handler central
-  registerErrorHandler(app);
+  // ────────────────────────────────────────────
+  // OpenAPI / Swagger UI
+  // ────────────────────────────────────────────
+  if (env.ENABLE_API_DOCS) {
+    await app.register(swagger, {
+      openapi: {
+        info: {
+          title: 'Facturación Electrónica Paraguay API',
+          description:
+            'API comercial multi-tenant para emisión de Documentos Electrónicos SIFEN. ' +
+            'Todos los endpoints bajo /v1 requieren header `Authorization: Bearer cmp_*` ' +
+            'excepto POST /v1/companies (signup) y /v1/health.',
+          version: '0.1.0',
+          contact: { name: 'Soporte' },
+        },
+        servers: [{ url: '/', description: 'Current server' }],
+        components: {
+          securitySchemes: {
+            bearerAuth: {
+              type: 'http',
+              scheme: 'bearer',
+              bearerFormat: 'cmp_<hex>',
+              description: 'API key master de la company. Se genera en POST /v1/companies.',
+            },
+          },
+        },
+        tags: [
+          { name: 'health', description: 'Health checks' },
+          { name: 'companies', description: 'Plataformas clientes del servicio' },
+          { name: 'tenants', description: 'Contribuyentes emisores (RUCs)' },
+          { name: 'tenant-certs', description: 'Certificados PKCS#12' },
+          { name: 'tenant-csc', description: 'Códigos CSC' },
+          { name: 'documents', description: 'Documentos electrónicos' },
+          { name: 'batches', description: 'Emisión por lotes asíncrona' },
+          { name: 'eventos', description: 'Eventos SIFEN (cancelación, etc.)' },
+          { name: 'consultas', description: 'Consultas read-only a SIFEN' },
+        ],
+      },
+      transform: jsonSchemaTransform,
+    });
 
+    await app.register(swaggerUi, {
+      routePrefix: '/docs',
+      uiConfig: {
+        docExpansion: 'list',
+        deepLinking: true,
+      },
+    });
+  }
+
+  // ────────────────────────────────────────────
+  // Error handler + audit log
+  // ────────────────────────────────────────────
+  registerErrorHandler(app);
+  registerAuditLog(app);
+
+  // Hook para reportar errores 5xx a Sentry (los 4xx son errores de cliente)
+  app.addHook('onError', async (request, _reply, error) => {
+    if ('statusCode' in error && typeof error.statusCode === 'number' && error.statusCode < 500) {
+      return;
+    }
+    captureException(error, {
+      companyId: request.company?.id,
+      tenantId: request.tenant?.id,
+      requestId: request.id,
+    });
+  });
+
+  // ────────────────────────────────────────────
   // Rutas bajo /v1
+  // ────────────────────────────────────────────
   await app.register(
     async (api) => {
       await api.register(healthRoutes);
@@ -79,6 +183,7 @@ export const buildApp = async () => {
       await api.register(documentRoutes);
       await api.register(eventoRoutes);
       await api.register(batchRoutes);
+      await api.register(consultaRoutes);
     },
     { prefix: '/v1' },
   );
@@ -87,7 +192,8 @@ export const buildApp = async () => {
   app.get('/', async () => ({
     service: 'facturacion-api',
     version: '0.1.0',
-    docs: '/v1/health',
+    docs: env.ENABLE_API_DOCS ? '/docs' : null,
+    health: '/v1/health',
     env: env.NODE_ENV,
   }));
 

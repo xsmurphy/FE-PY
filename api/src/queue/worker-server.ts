@@ -12,23 +12,29 @@ import { createSifenBatchWorker } from './workers/sifen-batch.worker.js';
 import { createSifenRetryWorker } from './workers/sifen-retry.worker.js';
 import { closeAllQueues } from './queues.js';
 import { closeRedisConnection } from './connection.js';
+import { startIdempotencyGc, stopIdempotencyGc } from './gc.js';
+import { initSentry } from '../lib/sentry.js';
 
-const log = (msg: string) => {
+const log = (msg: string, extra?: Record<string, unknown>) => {
   // eslint-disable-next-line no-console
-  console.log(`[worker-server] ${msg}`);
+  console.log(`[worker-server] ${msg}`, extra ?? '');
 };
 
 const main = async () => {
+  initSentry();
   log('starting workers...');
 
   const batchWorker = createSifenBatchWorker();
   const retryWorker = createSifenRetryWorker();
 
-  log('workers ready: sifen-batch, sifen-retry');
+  startIdempotencyGc(log);
+
+  log('workers ready: sifen-batch, sifen-retry, gc-idempotency');
 
   const shutdown = async (signal: string) => {
     log(`received ${signal}, shutting down...`);
     try {
+      stopIdempotencyGc();
       await Promise.allSettled([batchWorker.close(), retryWorker.close()]);
       await closeAllQueues();
       await closeRedisConnection();

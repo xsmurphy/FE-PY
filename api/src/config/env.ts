@@ -34,7 +34,25 @@ const envSchema = z.object({
     .default('false')
     .transform((v) => v === 'true'),
 
+  // CORS: comma-separated list of allowed origins. '*' = allow all.
+  CORS_ORIGINS: z.string().default('*'),
+
+  // Rate limiting por company/IP
+  RATE_LIMIT_MAX: z.coerce.number().int().positive().default(600), // req
+  RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000), // 1 min
+
+  // Idempotency GC interval
+  IDEMPOTENCY_GC_INTERVAL_MS: z.coerce.number().int().positive().default(3_600_000), // 1h
+
+  // API documentation exposure
+  ENABLE_API_DOCS: z
+    .string()
+    .default('true')
+    .transform((v) => v === 'true'),
+
   SENTRY_DSN: z.string().url().optional().or(z.literal('')),
+  SENTRY_ENVIRONMENT: z.string().default('development'),
+  SENTRY_TRACES_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(0.1),
 });
 
 type EnvShape = z.infer<typeof envSchema>;

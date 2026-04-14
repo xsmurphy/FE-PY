@@ -12,6 +12,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { requireTenantScope } from '../middleware/tenant-scope.js';
 import { idempotencyCheck, idempotencyPersist } from '../middleware/idempotency.js';
 import { createDeDocument } from '../services/de.service.js';
+import { isDocumentCancelled } from '../services/evento.service.js';
 import { decryptCertBundle } from '../services/cert.service.js';
 import { NotFoundError, BadRequestError, SifenError } from '../lib/errors.js';
 import { env } from '../config/env.js';
@@ -69,6 +70,7 @@ const deResponseSchema = z.object({
   xmlUrl: z.string().nullable(),
   signed: z.boolean(),
   sentToSifen: z.boolean(),
+  cancelled: z.boolean(),
   sifen: z
     .object({
       codigoRespuesta: z.string().optional(),
@@ -103,6 +105,7 @@ const serializeDocument = async (row: any, withPresignedUrl: boolean) => {
       xmlUrl = null;
     }
   }
+  const cancelled = row.cdc ? await isDocumentCancelled(row.tenantId, row.cdc) : false;
   return {
     txnId: row.id,
     cdc: row.cdc,
@@ -117,6 +120,7 @@ const serializeDocument = async (row: any, withPresignedUrl: boolean) => {
     xmlUrl,
     signed: !!row.sifenResponseRaw || row.estado === 'aprobado',
     sentToSifen: !!row.sifenResponseRaw,
+    cancelled,
     sifen: row.sifenCodigoRespuesta
       ? {
           codigoRespuesta: row.sifenCodigoRespuesta,

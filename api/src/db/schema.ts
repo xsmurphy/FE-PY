@@ -237,6 +237,11 @@ export const documents = pgTable(
     sifenResponseRaw: jsonb('sifen_response_raw').$type<Record<string, unknown>>(),
     sifenCodigoRespuesta: text('sifen_codigo_respuesta'),
     sifenMensaje: text('sifen_mensaje'),
+    // Protocolo de autorización (dProtAut) que SIFEN devuelve al aprobar,
+    // y número de lote (dProtConsLote) del envío asíncrono — el canal real
+    // de producción (el síncrono `recibe` está restringido, código 1264)
+    sifenProtocoloAutorizacion: text('sifen_protocolo_autorizacion'),
+    sifenLoteNumero: text('sifen_lote_numero'),
 
     // operacional
     idempotencyKey: text('idempotency_key'),

@@ -34,11 +34,7 @@ import {
 import { decryptTenantCsc } from './csc.service.js';
 import { generateKudePdf } from './kude.service.js';
 import { uploadObject, storageKey } from '../storage/s3.js';
-import {
-  extractSifenCodigo,
-  extractSifenMensaje,
-  extractSifenEstado,
-} from '../lib/sifen-response.js';
+import { sendDeViaLote } from './sifen-sender.js';
 import { enqueueSifenRetry } from '../queue/queues.js';
 import { env } from '../config/env.js';
 import {
@@ -57,8 +53,6 @@ const xmlgen = require('facturacionelectronicapy-xmlgen').default;
 const xmlsign = require('facturacionelectronicapy-xmlsign').default;
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const qrgen = require('facturacionelectronicapy-qrgen').default;
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const setapi = require('facturacionelectronicapy-setapi').default;
 
 // ═════════════════════════════════════════════════════════════════
 // Input / Output types
@@ -83,6 +77,7 @@ export interface CreateDeResult {
   xmlStorageKey: string;
   sifenCodigoRespuesta?: string;
   sifenMensaje?: string;
+  sifenProtocoloAutorizacion?: string;
   signed: boolean;
   sentToSifen: boolean;
 }
@@ -308,6 +303,8 @@ export const createDeDocument = async (input: CreateDeInput): Promise<CreateDeRe
     let sentToSifen = false;
     let sifenCodigoRespuesta: string | undefined;
     let sifenMensaje: string | undefined;
+    let sifenProtocoloAutorizacion: string | undefined;
+    let sifenLoteNumero: string | undefined;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let sifenResponseRaw: Record<string, any> | undefined;
     let estado: 'pendiente' | 'aprobado' | 'rechazado' | 'error' = 'pendiente';
@@ -382,26 +379,42 @@ export const createDeDocument = async (input: CreateDeInput): Promise<CreateDeRe
 
       try {
         await writeFile(sifenTmpPath, decryptedCert.p12, { mode: 0o600 });
-        const requestId = Number(Date.now() % 1_000_000);
 
-        const response = await setapi.recibe(
-          requestId,
-          xmlFinal,
-          tenant.env,
-          sifenTmpPath,
-          decryptedCert.password,
-        );
-        sifenResponseRaw =
-          typeof response === 'string' ? { raw: response } : (response as Record<string, unknown>);
+        // Envío por LOTE — el canal síncrono `recibe` está restringido en
+        // producción (1264). Ver sifen-sender.ts.
+        const sendResult = await sendDeViaLote({
+          xml: xmlFinal,
+          cdc,
+          env: tenant.env,
+          certPath: sifenTmpPath,
+          certPassword: decryptedCert.password,
+        });
+        sifenResponseRaw = sendResult.raw;
         sentToSifen = true;
+        sifenCodigoRespuesta = sendResult.codigo;
+        sifenMensaje = sendResult.mensaje;
+        sifenProtocoloAutorizacion = sendResult.protocoloAutorizacion;
+        sifenLoteNumero = sendResult.loteNumero;
 
-        sifenCodigoRespuesta = extractSifenCodigo(sifenResponseRaw);
-        sifenMensaje = extractSifenMensaje(sifenResponseRaw);
-
-        // dEstRes es el veredicto oficial; 0260 como fallback si no vino
-        estado =
-          extractSifenEstado(sifenResponseRaw) ??
-          (sifenCodigoRespuesta === '0260' ? 'aprobado' : 'rechazado');
+        if (sendResult.estado === 'error') {
+          // SIFEN no aceptó el lote o la respuesta fue irreconocible —
+          // mismo tratamiento que un fallo transitorio: retry worker
+          throw new Error(
+            `SIFEN lote no aceptado (${sendResult.codigo ?? 'sin código'}): ${sendResult.mensaje ?? ''}`,
+          );
+        }
+        // 'aprobado' | 'rechazado' | 'enviando' (veredicto pendiente,
+        // el retry worker lo resuelve consultando el lote)
+        if (sendResult.estado === 'enviando') {
+          estado = 'pendiente';
+          void enqueueSifenRetry({ documentId: docId, companyId, tenantId: tenant.id, cdc }).catch(
+            () => {
+              // best effort — el cliente puede re-disparar con POST /de/:cdc/consulta
+            },
+          );
+        } else {
+          estado = sendResult.estado;
+        }
       } catch (sifenErr) {
         // Error transitorio: network timeout, SIFEN 5xx, etc.
         // Marcamos como error y encolamos retry. El cliente recibe respuesta
@@ -449,6 +462,8 @@ export const createDeDocument = async (input: CreateDeInput): Promise<CreateDeRe
         sifenResponseRaw,
         sifenCodigoRespuesta,
         sifenMensaje,
+        sifenProtocoloAutorizacion,
+        sifenLoteNumero,
         updatedAt: new Date(),
       })
       .where(eq(documents.id, docId));
@@ -463,6 +478,7 @@ export const createDeDocument = async (input: CreateDeInput): Promise<CreateDeRe
       xmlStorageKey: xmlKey,
       sifenCodigoRespuesta,
       sifenMensaje,
+      sifenProtocoloAutorizacion,
       signed,
       sentToSifen,
     };

@@ -8,14 +8,15 @@
  *   1. Cargar el document row + cert del tenant
  *   2. Si ya está aprobado/rechazado, no reintentar
  *   3. Descargar el XML firmado desde S3 (xml_storage_key)
- *   4. Re-enviar con setapi.recibe
- *   5. Parsear respuesta y actualizar document row
+ *   4. Si el documento ya tiene lote aceptado (sifen_lote_numero):
+ *      SOLO consultar el veredicto — reenviar un CDC ya aprobado rebota
+ *      como duplicado. Si no, enviar por recibeLote (sifen-sender).
+ *   5. Actualizar document row con el veredicto
  *
  * Cada intento tiene timeout corto — BullMQ maneja los reintentos del job
  * con backoff exponencial.
  */
 import { Worker, type Job } from 'bullmq';
-import { createRequire } from 'node:module';
 import { writeFile, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -24,22 +25,11 @@ import { and, eq } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import { documents, tenants, tenantCerts } from '../../db/schema.js';
 import { decryptCertBundle } from '../../services/cert.service.js';
+import { sendDeViaLote, consultarVeredictoLote } from '../../services/sifen-sender.js';
 import { getObject } from '../../storage/s3.js';
 import { getRedisConnection } from '../connection.js';
 import type { SifenRetryJobData } from '../queues.js';
 import { env } from '../../config/env.js';
-
-const require = createRequire(import.meta.url);
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const setapi = require('facturacionelectronicapy-setapi').default;
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const extractCodigo = (r: Record<string, any>): string | undefined =>
-  r?.dCodRes ?? r?.gResProcDE?.dCodRes ?? r?.rResEnviDe?.gResProcDE?.dCodRes;
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const extractMensaje = (r: Record<string, any>): string | undefined =>
-  r?.dMsgRes ?? r?.gResProcDE?.dMsgRes ?? r?.rResEnviDe?.gResProcDE?.dMsgRes;
 
 export const createSifenRetryWorker = () => {
   const worker = new Worker<SifenRetryJobData, { estado: string; codigo?: string }>(
@@ -123,52 +113,59 @@ export const createSifenRetryWorker = () => {
 
       try {
         await writeFile(tmpCertPath, decrypted.p12, { mode: 0o600 });
-        const requestId = Number(Date.now() % 1_000_000);
 
-        const response = await setapi.recibe(
-          requestId,
-          xml,
-          tenant.env,
-          tmpCertPath,
-          decrypted.password,
-        );
-        const sifenResponseRaw: Record<string, unknown> =
-          typeof response === 'string'
-            ? { raw: response }
-            : (response as Record<string, unknown>);
+        // Lote ya aceptado en un intento previo → solo consultar veredicto.
+        // Sin lote previo → enviar por recibeLote (canal de producción).
+        const sendResult = doc.sifenLoteNumero
+          ? await consultarVeredictoLote({
+              loteNumero: doc.sifenLoteNumero,
+              cdc,
+              env: tenant.env,
+              certPath: tmpCertPath,
+              certPassword: decrypted.password,
+            })
+          : await sendDeViaLote({
+              xml,
+              cdc,
+              env: tenant.env,
+              certPath: tmpCertPath,
+              certPassword: decrypted.password,
+            });
 
-        const codigo = extractCodigo(sifenResponseRaw);
-        const mensaje = extractMensaje(sifenResponseRaw);
-
-        type DocumentEstado =
-          | 'pendiente'
-          | 'generando'
-          | 'firmando'
-          | 'enviando'
-          | 'aprobado'
-          | 'rechazado'
-          | 'error';
-        let nuevoEstado: DocumentEstado = doc.estado as DocumentEstado;
-        if (codigo === '0260' || codigo === '0261' || codigo === '0262') {
-          nuevoEstado = 'aprobado';
-        } else if (codigo) {
-          nuevoEstado = 'rechazado';
+        if (sendResult.estado === 'error') {
+          // SIFEN no aceptó / respuesta irreconocible — dejar que BullMQ
+          // reintente con backoff (el estado del doc no cambia)
+          throw new Error(
+            `SIFEN lote error (${sendResult.codigo ?? 'sin código'}): ${sendResult.mensaje ?? ''}`,
+          );
         }
+
+        // 'enviando' = veredicto aún pendiente → mantener estado, persistir
+        // el número de lote para que el próximo intento solo consulte
+        const nuevoEstado = sendResult.estado === 'enviando' ? doc.estado : sendResult.estado;
 
         await db
           .update(documents)
           .set({
             estado: nuevoEstado,
-            sifenResponseRaw,
-            sifenCodigoRespuesta: codigo ?? doc.sifenCodigoRespuesta,
-            sifenMensaje: mensaje ?? doc.sifenMensaje,
+            sifenResponseRaw: sendResult.raw,
+            sifenCodigoRespuesta: sendResult.codigo ?? doc.sifenCodigoRespuesta,
+            sifenMensaje: sendResult.mensaje ?? doc.sifenMensaje,
+            sifenProtocoloAutorizacion:
+              sendResult.protocoloAutorizacion ?? doc.sifenProtocoloAutorizacion,
+            sifenLoteNumero: sendResult.loteNumero ?? doc.sifenLoteNumero,
             retries: (doc.retries ?? 0) + 1,
             updatedAt: new Date(),
           })
           .where(eq(documents.id, documentId));
 
-        job.log(`[retry ${documentId}] estado=${nuevoEstado} codigo=${codigo ?? '-'}`);
-        return { estado: nuevoEstado, codigo };
+        job.log(`[retry ${documentId}] estado=${nuevoEstado} codigo=${sendResult.codigo ?? '-'}`);
+
+        if (sendResult.estado === 'enviando') {
+          // Forzar reintento del job para consultar el veredicto más tarde
+          throw new Error(`Lote ${sendResult.loteNumero} aún sin veredicto`);
+        }
+        return { estado: nuevoEstado, codigo: sendResult.codigo };
       } finally {
         decrypted.p12.fill(0);
         await unlink(tmpCertPath).catch(() => {});

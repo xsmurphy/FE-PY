@@ -8,6 +8,13 @@
       "when": 1776175065212,
       "tag": "0000_conscious_komodo",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1788821844316,
+      "tag": "0001_sifen_lote_fields",
+      "breakpoints": true
     }
   ]
 }

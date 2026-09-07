@@ -82,6 +82,8 @@ const deResponseSchema = z.object({
     .object({
       codigoRespuesta: z.string().optional(),
       mensaje: z.string().optional(),
+      protocoloAutorizacion: z.string().optional(),
+      loteNumero: z.string().optional(),
     })
     .optional(),
   createdAt: z.string(),
@@ -143,6 +145,8 @@ const serializeDocument = async (row: any, withPresignedUrl: boolean) => {
       ? {
           codigoRespuesta: row.sifenCodigoRespuesta,
           mensaje: row.sifenMensaje ?? undefined,
+          protocoloAutorizacion: row.sifenProtocoloAutorizacion ?? undefined,
+          loteNumero: row.sifenLoteNumero ?? undefined,
         }
       : undefined,
     createdAt: row.createdAt.toISOString(),

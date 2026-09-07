@@ -85,3 +85,61 @@ export const extractSifenEstado = (resp: AnyRecord): 'aprobado' | 'rechazado' | 
   if (normalized === 'rechazado') return 'rechazado';
   return undefined;
 };
+
+// ═════════════════════════════════════════════════════════════════
+// Envío por lote (recibeLote / consultaLote) — canal real de producción
+// ═════════════════════════════════════════════════════════════════
+//
+// Respuestas REALES observadas en producción (2026-09-07):
+//
+// recibeLote → { "ns2:rResEnviLoteDe": { dFecProc, dCodRes: "0300",
+//                dMsgRes: "Lote recibido con éxito",
+//                dProtConsLote: "4104242862567045944", dTpoProces: "0" } }
+//
+// consultaLote → { "ns2:rResEnviConsLoteDe": { dFecProc,
+//                  dCodResLot: "0362", dMsgResLot: "Procesamiento de lote {...} concluido",
+//                  gResProcLote: { id: "<CDC>", dEstRes: "Aprobado",
+//                    dProtAut: "3549197037",
+//                    gResProc: { dCodRes: "0260", dMsgRes: "Aprobado" } } } }
+
+/** Número de lote (dProtConsLote) devuelto por recibeLote. Puede exceder
+ *  Number.MAX_SAFE_INTEGER (19 dígitos) — SIEMPRE tratarlo como string. */
+export const extractLoteNumero = (resp: AnyRecord): string | undefined =>
+  asString(findDeep(stripNsKeys(resp), 'dProtConsLote'));
+
+/** Código de recepción del lote: "0300" = recibido con éxito. */
+export const extractLoteCodigoRecepcion = (resp: AnyRecord): string | undefined =>
+  asString(findDeep(stripNsKeys(resp), 'dCodRes'));
+
+/** Código del estado de procesamiento del lote en consultaLote:
+ *  "0361" = en procesamiento (reintentar), "0362" = concluido. */
+export const extractLoteCodigoConsulta = (resp: AnyRecord): string | undefined =>
+  asString(findDeep(stripNsKeys(resp), 'dCodResLot'));
+
+export interface LoteDeResultado {
+  cdc?: string;
+  estado?: 'aprobado' | 'rechazado';
+  codigo?: string;
+  mensaje?: string;
+  protocoloAutorizacion?: string;
+}
+
+/**
+ * Resultado por-documento dentro de la consulta de lote. gResProcLote puede
+ * ser objeto (lote de 1) o array (lote de N) — si se pasa `cdc`, devuelve la
+ * entrada de ese documento; si no, la primera.
+ */
+export const extractLoteResultado = (resp: AnyRecord, cdc?: string): LoteDeResultado | undefined => {
+  const g = findDeep(stripNsKeys(resp), 'gResProcLote');
+  if (g == null) return undefined;
+  const entries: AnyRecord[] = Array.isArray(g) ? g : [g];
+  const entry = (cdc ? entries.find((e) => asString(e?.id ?? e?.Id) === cdc) : undefined) ?? entries[0];
+  if (entry == null) return undefined;
+  return {
+    cdc: asString(entry.id ?? entry.Id),
+    estado: extractSifenEstado(entry),
+    codigo: extractSifenCodigo(entry),
+    mensaje: extractSifenMensaje(entry),
+    protocoloAutorizacion: asString(findDeep(entry, 'dProtAut')),
+  };
+};

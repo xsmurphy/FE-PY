@@ -34,6 +34,11 @@ import {
 import { decryptTenantCsc } from './csc.service.js';
 import { generateKudePdf } from './kude.service.js';
 import { uploadObject, storageKey } from '../storage/s3.js';
+import {
+  extractSifenCodigo,
+  extractSifenMensaje,
+  extractSifenEstado,
+} from '../lib/sifen-response.js';
 import { enqueueSifenRetry } from '../queue/queues.js';
 import { env } from '../config/env.js';
 import {
@@ -290,20 +295,23 @@ export const createDeDocument = async (input: CreateDeInput): Promise<CreateDeRe
       const xmlSigned = await signXmlWithBundle(xml, certBundle);
       signed = true;
 
-      // 6b. Validar XSD estricto (post-firma)
-      const postValidation = await validatePostSigning(xmlSigned);
+      // 6b. Generar QR (si CSC está configurado). Va ANTES de la validación
+      // XSD estricta: el XSD firmado exige el bloque gCamFuFD (dCarQR), que
+      // es justamente lo que agrega qrgen. Sin CSC el XML queda sin QR y la
+      // validación de abajo lo rechaza — correcto, SIFEN lo rechazaría igual.
+      let xmlWithQr = xmlSigned;
+      const csc = await decryptTenantCsc(tenant.id, companyId);
+      if (csc) {
+        xmlWithQr = await qrgen.generateQR(xmlSigned, csc.cscId, csc.csc, tenant.env);
+      }
+
+      // 6c. Validar XSD estricto (post-firma, con QR incluido)
+      const postValidation = await validatePostSigning(xmlWithQr);
       if (!postValidation.valid) {
         throw new ValidationError(
           'El XML firmado no pasa validación XSD estricta',
           postValidation.errors,
         );
-      }
-
-      // 6c. Generar QR (opcional, si CSC está configurado)
-      let xmlWithQr = xmlSigned;
-      const csc = await decryptTenantCsc(tenant.id, companyId);
-      if (csc) {
-        xmlWithQr = await qrgen.generateQR(xmlSigned, csc.cscId, csc.csc, tenant.env);
       }
 
       xmlFinal = xmlWithQr;
@@ -363,17 +371,13 @@ export const createDeDocument = async (input: CreateDeInput): Promise<CreateDeRe
           typeof response === 'string' ? { raw: response } : (response as Record<string, unknown>);
         sentToSifen = true;
 
-        // Calibrar con respuestas reales en Fase 1 — estos códigos son placeholder
-        const codigo = extractSifenCodigo(sifenResponseRaw);
-        const mensaje = extractSifenMensaje(sifenResponseRaw);
-        sifenCodigoRespuesta = codigo;
-        sifenMensaje = mensaje;
+        sifenCodigoRespuesta = extractSifenCodigo(sifenResponseRaw);
+        sifenMensaje = extractSifenMensaje(sifenResponseRaw);
 
-        if (codigo && (codigo === '0260' || codigo === '0261' || codigo === '0262')) {
-          estado = 'aprobado';
-        } else {
-          estado = 'rechazado';
-        }
+        // dEstRes es el veredicto oficial; 0260 como fallback si no vino
+        estado =
+          extractSifenEstado(sifenResponseRaw) ??
+          (sifenCodigoRespuesta === '0260' ? 'aprobado' : 'rechazado');
       } catch (sifenErr) {
         // Error transitorio: network timeout, SIFEN 5xx, etc.
         // Marcamos como error y encolamos retry. El cliente recibe respuesta
@@ -453,28 +457,7 @@ export const createDeDocument = async (input: CreateDeInput): Promise<CreateDeRe
 // Utilidades de respuesta SIFEN (best effort)
 // ═════════════════════════════════════════════════════════════════
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const extractSifenCodigo = (resp: Record<string, any>): string | undefined => {
-  // Las respuestas reales de SIFEN vienen en SOAP con campos como
-  // rResEnviDe/gResProcDE/dCodRes — esta función es placeholder hasta
-  // que tengamos un cert real y podamos inspeccionar las respuestas.
-  return (
-    resp?.dCodRes ??
-    resp?.gResProcDE?.dCodRes ??
-    resp?.rResEnviDe?.gResProcDE?.dCodRes ??
-    undefined
-  );
-};
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const extractSifenMensaje = (resp: Record<string, any>): string | undefined => {
-  return (
-    resp?.dMsgRes ??
-    resp?.gResProcDE?.dMsgRes ??
-    resp?.rResEnviDe?.gResProcDE?.dMsgRes ??
-    undefined
-  );
-};
+// Parsing de respuestas SIFEN calibrado con producción — ver lib/sifen-response.ts
 
 /**
  * Calcula el monto total del documento sumando los items.

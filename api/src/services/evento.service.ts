@@ -29,6 +29,11 @@ import { db } from '../db/index.js';
 import { documents, eventos, tenantCerts, type Tenant, type EventoRow } from '../db/schema.js';
 import { decryptCertBundle, type EncryptedCertBundle } from './cert.service.js';
 import { uploadObject, storageKey } from '../storage/s3.js';
+import {
+  extractSifenCodigo,
+  extractSifenMensaje,
+  extractSifenEstado,
+} from '../lib/sifen-response.js';
 import { env } from '../config/env.js';
 import {
   NotFoundError,
@@ -154,13 +159,7 @@ const signEventoWithBundle = async (
   }
 };
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const extractSifenCodigo = (resp: Record<string, any>): string | undefined =>
-  resp?.dCodRes ?? resp?.gResProcEvento?.dCodRes ?? undefined;
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const extractSifenMensaje = (resp: Record<string, any>): string | undefined =>
-  resp?.dMsgRes ?? resp?.gResProcEvento?.dMsgRes ?? undefined;
+// Parsing de respuestas SIFEN calibrado con producción — ver lib/sifen-response.ts
 
 /**
  * Verifica si un documento ya fue cancelado con éxito previamente.
@@ -301,17 +300,13 @@ export const cancelarDocumento = async (input: CancelacionInput): Promise<Evento
           sifenCodigoRespuesta = extractSifenCodigo(sifenResponseRaw);
           sifenMensaje = extractSifenMensaje(sifenResponseRaw);
 
-          // Códigos SIFEN de aprobación de cancelación (placeholder — calibrar con
-          // respuestas reales en Fase 1)
-          if (
-            sifenCodigoRespuesta === '0260' ||
-            sifenCodigoRespuesta === '1001' ||
-            sifenCodigoRespuesta === '1002'
-          ) {
-            estado = 'aprobado';
-          } else {
-            estado = 'rechazado';
-          }
+          // dEstRes es el veredicto oficial (calibrado con producción);
+          // fallback por códigos de aprobación de eventos si no vino
+          estado =
+            extractSifenEstado(sifenResponseRaw) ??
+            (['0600', '0601', '0602', '0260'].includes(sifenCodigoRespuesta ?? '')
+              ? 'aprobado'
+              : 'rechazado');
         } finally {
           decrypted.p12.fill(0);
           await unlink(tmpCertPath).catch(() => {});
@@ -465,15 +460,11 @@ export const inutilizarRango = async (input: InutilizacionInput): Promise<Evento
           sifenCodigoRespuesta = extractSifenCodigo(sifenResponseRaw);
           sifenMensaje = extractSifenMensaje(sifenResponseRaw);
 
-          if (
-            sifenCodigoRespuesta === '0260' ||
-            sifenCodigoRespuesta === '1001' ||
-            sifenCodigoRespuesta === '1002'
-          ) {
-            estado = 'aprobado';
-          } else {
-            estado = 'rechazado';
-          }
+          estado =
+            extractSifenEstado(sifenResponseRaw) ??
+            (['0600', '0601', '0602', '0260'].includes(sifenCodigoRespuesta ?? '')
+              ? 'aprobado'
+              : 'rechazado');
         } finally {
           decrypted.p12.fill(0);
           await unlink(tmpCertPath).catch(() => {});

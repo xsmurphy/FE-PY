@@ -17,7 +17,7 @@ services:
       context: ..
       dockerfile: api/Dockerfile
     ports:
-      - "3000:3000"
+      - "${API_HOST_PORT:-3001}:3000"  # host 3001: el 3000 suele estar ocupado por otro dev server
     environment:
       NODE_ENV: development
       PORT: 3000
@@ -31,7 +31,9 @@ services:
       S3_SECRET_KEY: minioadmin
       S3_FORCE_PATH_STYLE: "true"
       MASTER_KEY_BASE64: ${MASTER_KEY_BASE64:?MASTER_KEY_BASE64 is required}
-      ENABLE_SIFEN: "false"
+      ENABLE_SIFEN: ${ENABLE_SIFEN:-false}
+      ENABLE_KUDE: ${ENABLE_KUDE:-false}
+      JAVA_PATH: /usr/lib/jvm/default-jvm/bin/java
     command: ["api"]
     depends_on:
       postgres:
@@ -60,7 +62,9 @@ services:
       S3_SECRET_KEY: minioadmin
       S3_FORCE_PATH_STYLE: "true"
       MASTER_KEY_BASE64: ${MASTER_KEY_BASE64:?MASTER_KEY_BASE64 is required}
-      ENABLE_SIFEN: "false"
+      ENABLE_SIFEN: ${ENABLE_SIFEN:-false}
+      ENABLE_KUDE: ${ENABLE_KUDE:-false}
+      JAVA_PATH: /usr/lib/jvm/default-jvm/bin/java
     command: ["worker"]
     depends_on:
       api:

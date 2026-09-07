@@ -10,6 +10,11 @@ import { db } from '../db/index.js';
 import { documents, tenantCerts } from '../db/schema.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireTenantScope } from '../middleware/tenant-scope.js';
+import {
+  extractSifenCodigo,
+  extractSifenMensaje,
+  extractSifenEstado,
+} from '../lib/sifen-response.js';
 import { idempotencyCheck, idempotencyPersist } from '../middleware/idempotency.js';
 import { createDeDocument } from '../services/de.service.js';
 import { isDocumentCancelled } from '../services/evento.service.js';
@@ -494,15 +499,20 @@ export const documentRoutes: FastifyPluginAsyncZod = async (app) => {
           throw new SifenError(`Error al consultar SIFEN: ${msg}`);
         }
 
-        // Heurística de estado (igual que en de.service.ts — calibrar con respuestas reales)
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const codigo = (sifenResponseRaw as any)?.dCodRes ?? (sifenResponseRaw as any)?.gResProcDE?.dCodRes;
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const mensaje = (sifenResponseRaw as any)?.dMsgRes ?? (sifenResponseRaw as any)?.gResProcDE?.dMsgRes;
+        // Parser calibrado con producción — ver lib/sifen-response.ts
+        const codigo = extractSifenCodigo(sifenResponseRaw);
+        const mensaje = extractSifenMensaje(sifenResponseRaw);
+        const veredicto = extractSifenEstado(sifenResponseRaw);
 
         let newEstado: typeof docRow.estado = docRow.estado;
-        if (codigo === '0260' || codigo === '0261' || codigo === '0262') {
+        if (veredicto) {
+          newEstado = veredicto;
+        } else if (codigo === '0260' || codigo === '0261' || codigo === '0262') {
           newEstado = 'aprobado';
+        } else if (codigo === '0420' || codigo === '0421' || codigo === '0422') {
+          // Códigos de "CDC no encontrado / no procesado" de consulta —
+          // el documento no existe en SIFEN, mantener estado local
+          newEstado = docRow.estado;
         } else if (codigo) {
           newEstado = 'rechazado';
         }

@@ -37,7 +37,7 @@
  *     - stdout parsing (stdout vs file output)
  */
 import { createRequire } from 'node:module';
-import { writeFile, readFile, unlink, mkdtemp, rm } from 'node:fs/promises';
+import { writeFile, readFile, unlink, mkdtemp, rm, readdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { existsSync } from 'node:fs';
@@ -121,16 +121,20 @@ export const generateKudePdf = async (xmlSigned: string): Promise<KudeResult> =>
     // Llamamos directamente al inner API (5 params) en vez del wrapper roto
     await KUDEGen.generateKUDE(env.JAVA_PATH, xmlPath, srcJasper, destFolder, jsonParam);
 
-    // El JAR genera el PDF en destFolder con nombre basado en el CDC
-    const pdfPath = join(tmpDir, `${cdc}.pdf`);
-    if (!existsSync(pdfPath)) {
+    // El JAR nombra el PDF a su gusto (observado en vivo:
+    // "Factura electrónica_18260177-001-002-0000614.pdf" — con espacio y
+    // tilde, nada de <CDC>.pdf). El tmpdir es exclusivo de esta corrida,
+    // así que el único .pdf que haya es el nuestro.
+    const files = await readdir(tmpDir);
+    const pdfName = files.find((f) => f.toLowerCase().endsWith('.pdf'));
+    if (!pdfName) {
       return {
         ok: false,
-        reason: `KUDE generation did not produce expected file at ${pdfPath}`,
+        reason: `KUDE jar exited OK but produced no .pdf in ${tmpDir} (files: ${files.join(', ') || 'none'})`,
       };
     }
 
-    const pdfBuffer = await readFile(pdfPath);
+    const pdfBuffer = await readFile(join(tmpDir, pdfName));
     return { ok: true, pdfBuffer };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

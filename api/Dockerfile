@@ -72,7 +72,10 @@ FROM node:20-alpine AS runtime
 # libxml2-utils: xmllint para validación XSD
 # openjdk17-jre-headless: requerido por facturacionelectronicapy-kude (JAR interno)
 # tini: init process para manejo correcto de señales
-RUN apk add --no-cache libxml2-utils openjdk17-jre-headless tini
+# tzdata: SIFEN valida las horas del XML y de la firma digital contra hora
+# paraguaya — el container DEBE correr en America/Asuncion (TZ env var)
+RUN apk add --no-cache libxml2-utils openjdk17-jre-headless tini tzdata
+ENV TZ=America/Asuncion
 ENV JAVA_PATH=/usr/lib/jvm/default-jvm/bin/java
 
 # Replicar layout del repo — copiamos desde api-builder que ya tiene el

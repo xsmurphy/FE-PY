@@ -92,6 +92,30 @@ export interface CreateDeResult {
 // ═════════════════════════════════════════════════════════════════
 
 /**
+ * Fecha/hora actual en hora paraguaya (America/Asuncion), formato
+ * "YYYY-MM-DDTHH:mm:ss" que espera xmlgen para dFeEmiDE.
+ *
+ * SIFEN interpreta TODAS las horas del documento como hora local paraguaya
+ * y rechaza con 1004 ("fecha y hora de la firma digital es adelantada") si
+ * la firma queda en el futuro — usar toISOString() (UTC, +3h) acá causó
+ * exactamente ese rechazo en producción (2026-09-07). No depende del TZ
+ * del proceso: el formatter fija la zona explícitamente.
+ */
+const nowAsuncion = (): string =>
+  new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'America/Asuncion',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  })
+    .format(new Date())
+    .replace(' ', 'T');
+
+/**
  * Construye el objeto `params` que espera `xmlgen.generateXMLDE()` desde
  * los datos persistidos del tenant.
  */
@@ -212,7 +236,7 @@ export const createDeDocument = async (input: CreateDeInput): Promise<CreateDeRe
       9,
       '0',
     );
-    const fecha = body.fecha ?? new Date().toISOString().slice(0, 19);
+    const fecha = body.fecha ?? nowAsuncion();
 
     const dataForXmlgen = {
       ...body,

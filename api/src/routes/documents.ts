@@ -509,9 +509,13 @@ export const documentRoutes: FastifyPluginAsyncZod = async (app) => {
           newEstado = veredicto;
         } else if (codigo === '0260' || codigo === '0261' || codigo === '0262') {
           newEstado = 'aprobado';
-        } else if (codigo === '0420' || codigo === '0421' || codigo === '0422') {
-          // Códigos de "CDC no encontrado / no procesado" de consulta —
-          // el documento no existe en SIFEN, mantener estado local
+        } else if (codigo === '0422') {
+          // 0422 = "CDC encontrado" (verificado en producción 2026-09-07):
+          // el documento existe en SIFEN; sin dEstRes en la respuesta,
+          // mantener el estado local
+          newEstado = docRow.estado;
+        } else if (codigo === '0420' || codigo === '0421') {
+          // CDC inexistente / no procesado — mantener estado local
           newEstado = docRow.estado;
         } else if (codigo) {
           newEstado = 'rechazado';

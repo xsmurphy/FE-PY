@@ -58,13 +58,21 @@ audit trail.
 
 ## Estado REAL del código (verificado en Docker)
 
-### ✅ Fase 2 MVP — 100% implementada + validada E2E
+### ✅ Fase 2 MVP — 100% implementada + validada E2E contra SIFEN producción
 
-**Actualización crítica 2026-04-14:** el stack completo se probó contra
-**Postgres + Redis + MinIO reales** vía `docker compose up`. El pipeline
-funciona end-to-end con `ENABLE_SIFEN=false` (emisión local sin envío a
-SIFEN). Se descubrieron y arreglaron **6 bugs que los unit tests nunca
-podían haber atrapado**. Ver la sección
+**Actualización crítica 2026-09-07:** primera emisión real contra **SIFEN
+producción** (no test) con cert `.p12` real de un cliente real (Balloon
+Party, RUC 3595193-1). Facturas 001-002-0000612 (aprobada 0260, luego
+anulada por evento 0600), 613 y 614 (protocolo `3549281396`) aprobadas; NC
+001-002-0000002 (protocolo `3549281825`) aprobada; consulta WS calibrada.
+Detalle completo, callejones sin salida y trampas conocidas en
+`.claude/_handoff.md` (lectura de arranque de la próxima sesión).
+
+**2026-04-14:** el stack completo se probó contra **Postgres + Redis + MinIO
+reales** vía `docker compose up`. El pipeline funciona end-to-end con
+`ENABLE_SIFEN=false` (emisión local sin envío a SIFEN). Se descubrieron y
+arreglaron **6 bugs que los unit tests nunca podían haber atrapado**. Ver la
+sección
 [Bugs encontrados durante la validación E2E](#bugs-encontrados-durante-la-validación-e2e)
 para el detalle.
 
@@ -125,16 +133,22 @@ Ver [api/test/](api/test/):
 | `POST /v1/tenants/:id/eventos/inutilizacion` | ✓ Verificado |
 | **XML generado valida contra `xsd-unsigned/siRecepDE_v150.xsd`** | ✓ **Crítico — verificado** |
 
-### NO probado todavía (requiere cert real)
+### Ya probado contra SIFEN producción real (2026-09-07)
+
+`xmlsign.signXML` con cert real, envío por `recibeLote`+`consultaLote`
+(no `recibe` síncrono — restringido en prod, ver Blockers), QR con CSC
+real, KUDE PDF, cancelación (evento 0600), NC, consulta WS (`0422`). Ver
+`.claude/_handoff.md` para protocolos y detalle.
+
+### NO probado todavía
 
 | Feature | Por qué no |
 |---|---|
-| `xmlsign.signXML` con cert `.p12` real | Requiere portal ekuatia |
-| Validación XSD estricta post-firma | Requiere XML con `<ds:Signature>` real |
-| Envío a SIFEN vía `setapi.recibe` | Requiere cert + ambiente test SIFEN |
-| Generación QR con CSC real | Requiere firma previa |
-| KUDE (PDF) completo | Requiere XML firmado + QR |
-| Calibración de códigos SIFEN (`0260/1001/1002`) | Requiere respuestas reales |
+| Inutilización de numeración | No ejercitado esta sesión |
+| ND / Autofactura / remisión | No ejercitado esta sesión |
+| Batch async (BullMQ) + retry worker | Worker no corre en el compose local (profile "workers" apagado) |
+| Receptor con CI sin RUC | No ejercitado esta sesión |
+| Deploy en Coolify / server Punto | Pendiente, ver Blockers |
 
 ---
 
@@ -446,20 +460,23 @@ Ver [api/.env.example](api/.env.example) para el archivo completo.
 
 ### 🔴 Blockers (sin esto no se deploya)
 
-- [ ] **Certificado `.p12` de prueba SIFEN** del portal ekuatia.set.gov.py
-- [ ] **CSC** del mismo portal (Perfil → Ambiente de prueba → CSC)
-- [ ] **Probar emisión real** contra ambiente SIFEN test con `ENABLE_SIFEN=true`
-- [ ] **Calibrar códigos SIFEN** (`0260/1001/1002` son placeholders en
-  [de.service.ts:301](api/src/services/de.service.ts#L301) y
-  [evento.service.ts:207](api/src/services/evento.service.ts#L207))
-- [ ] **Probar KUDE end-to-end** con XML firmado + Java en el container
-- [ ] **Droplet en DigitalOcean** con Coolify instalado
+Resuelto 2026-09-07: cert `.p12` + CSC reales conseguidos, emisión real
+contra SIFEN producción lograda (recibeLote/consultaLote — el `recibe`
+síncrono está restringido en prod, devuelve 1264 aunque el RUC esté
+habilitado), códigos SIFEN calibrados en vivo, KUDE probado (falta rebuild
+del container para activar el fix commiteado). Queda:
+
+- [ ] **Rebuild del container** para activar fix KUDE (`448c885`):
+  `docker compose -f api/docker-compose.yml up --build -d api`
+- [ ] **Droplet/server con Coolify** — server de Punto (167.71.165.221) acordado como destino
 - [ ] **Postgres managed** en DO o contenedor en Coolify
 - [ ] **Redis + MinIO/Spaces** en Coolify
-- [ ] **`MASTER_KEY_BASE64` generada + backup offline triple** (password manager + caja fuerte + storage cifrado)
-- [ ] **Dominio** apuntado al droplet
-- [ ] **Primer deploy staging** antes de prod
+- [ ] **`MASTER_KEY_BASE64` prod nueva + backup offline triple** (la de dev vive solo en `api/.env` local, no sirve para prod)
+- [ ] **Dominio** apuntado al server
+- [ ] **Primer deploy staging** antes de prod, con re-provisioning completo (company + tenant + cert + CSC + numeración)
 - [ ] **Gating del `/playground`** detrás de `ENABLE_PLAYGROUND=false` para prod
+- [ ] **409 legible + soporte de re-emisión** cuando un documento rechazado deja fila muerta en `documents` (UNIQUE tenant+numero)
+- [ ] **Coordinación de punto de expedición** con la sesión Punto: propuesta Factomate=001-001 / FE-PY=001-002 pendiente de confirmación del owner
 
 ### 🟡 Mejoras recomendadas antes del primer cliente
 
@@ -493,6 +510,15 @@ Al arrancar por primera vez el stack completo en Docker, se encontraron y
 arreglaron **6 bugs** que los unit tests nunca hubieran atrapado. Todos
 están fixeados en commits `9938878` y `b51aaa1`. Los documento porque
 son el tipo de cosas que vuelven a pasar en nuevos módulos del pipeline.
+
+**2026-09-07 (contra SIFEN producción real):** +7 hallazgos duros más
+(timezone en firma/dFeEmiDE, timbradoFecha nunca estimado, `recibe`
+síncrono restringido en prod, NC exige receptor identificado, KUDE en dos
+capas — JRE sin fontconfig + nombre de PDF del JAR, `dProtConsLote` de 19
+dígitos, fila muerta en `documents` tras rechazo). Detalle completo en
+`.claude/_handoff.md` — no repetido acá porque no son bugs de código sino
+comportamiento real de SIFEN, y viven mejor junto al resto del contexto de
+esa sesión.
 
 ### #1 — Dockerfile paths inconsistentes
 
@@ -607,6 +633,8 @@ Una vez que tengas el primer cliente real emitiendo facturas en staging:
 
 | Documento | Qué contiene |
 |---|---|
+| [.claude/_handoff.md](.claude/_handoff.md) | **Lectura de arranque** — estado al cierre de la última sesión, callejones sin salida, próximo paso |
+| [.claude/_session-log.md](.claude/_session-log.md) | Bitácora histórica de sesiones |
 | [README.md](README.md) | Motor xmlgen original (upstream, Marcos Jara) |
 | [PLAN.md](PLAN.md) | Plan detallado de fases con schema DB y endpoints |
 | [api/README.md](api/README.md) | Quickstart del API |
@@ -624,4 +652,4 @@ Una vez que tengas el primer cliente real emitiendo facturas en staging:
 2. **6 bugs descubiertos y arreglados** durante la primera corrida contra infra real (tipo de cosas que los unit tests no atrapan).
 3. **Playground UI en `/playground`** para probar todo sin Postman, estado persistido en localStorage.
 4. **El XML generado valida contra el XSD oficial SIFEN v150** — la misma validación que va a aplicar SIFEN al recibirlo.
-5. **Lo único bloqueante ahora es conseguir el `.p12` real del portal ekuatia** para probar firma + envío + KUDE y calibrar códigos de respuesta SIFEN.
+5. **2026-09-07: primera emisión real validada contra SIFEN producción** (firma, envío por recibeLote/consultaLote, QR, KUDE, cancelación, NC, consulta) — lo que falta ahora es infraestructura de deploy (Coolify), no validación del motor. Detalle en `.claude/_handoff.md`.

@@ -352,9 +352,12 @@ export const createDeDocument = async (input: CreateDeInput): Promise<CreateDeRe
       if (kudeResult.ok && kudeResult.pdfBuffer) {
         kudeKey = storageKey.kude(companyId, tenant.id, cdc);
         await uploadObject(kudeKey, kudeResult.pdfBuffer, { contentType: 'application/pdf' });
+      } else {
+        // No bloquea la emisión, pero el motivo TIENE que quedar en logs —
+        // un fallo silencioso acá costó descubrir que el KUDE nunca se generó
+        // eslint-disable-next-line no-console
+        console.warn(`[kude] generación falló para CDC ${cdc}: ${kudeResult.reason ?? 'sin motivo'}`);
       }
-      // Si kudeResult.ok === false, no es error — el cliente puede pedir
-      // regeneración después vía un endpoint dedicado (TODO en Fase 3)
     }
 
     // Guardamos el CDC y xml_storage_key ANTES de intentar enviar, así si el

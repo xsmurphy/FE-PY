@@ -22,14 +22,23 @@ Intentos previos SIN efecto fiscal (SIFEN los rechazó, no existen como
 documentos): CDC `...7705` (rechazo 1004) y CDC `...7969` (rechazo 1107).
 No requieren cancelación — un DE rechazado no se registra.
 
-**Cancelación de la 612: pendiente de decisión del owner** (es un evento
-fiscal real; no la disparo por pedido de otra sesión). Si el owner aprueba,
-el endpoint ya existe: `POST /v1/tenants/:id/eventos/cancelacion`
-`{cdc, motivo}` — ventana de 48h desde la emisión.
+**Actualización post-batería (2026-09-07 ~23:10 PY):**
 
-**Correlativo:** el próximo número libre en `001-002` es **613** (la 612
-está consumida y aprobada). El sistema actual del cliente (Factomate) emite
-por `001-001` (última vista: 0000833) — no tocar ese punto de expedición.
+| Doc | Estado final |
+|---|---|
+| 001-002-0000612 | Aprobada → **ANULADA** por evento (SIFEN 0600, "Evento registrado correctamente") |
+| 001-002-0000613 | **VIGENTE** — aprobada directo por el pipeline integrado (0260, protocolo `3549238961`, CDC `01035951931001002000061312026090714586994762`) |
+
+**Correlativo: el próximo número libre en `001-002` es 614.** El sistema
+actual del cliente (Factomate) emite por `001-001` (última vista: 0000833)
+— no tocar ese punto de expedición; corregir el BranchDocumentType de
+Factomate DEV que quedó apuntando a 001-002.
+
+Cancelación (ejercitada en vivo): respuesta 201 `{id, cdc, tipoEvento:
+"cancelacion", estado: "aprobado", sifenCodigoRespuesta: "0600",
+sifenMensaje: "Evento registrado correctamente", ...}` — el código de
+aprobación de EVENTOS es **0600**, no 0260. Solo docs `aprobado` son
+cancelables (409 si no); ventana 48h.
 
 ## 2. Dónde corre FE-PY hoy
 

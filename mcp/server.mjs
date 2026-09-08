@@ -208,11 +208,27 @@ const resolverReceptor = async (tenantId, cliente) => {
     };
   }
   if (cliente?.ci) {
+    // En Paraguay el RUC de persona física = cédula + DV: intentamos el
+    // padrón. Si tiene RUC activo, recuperamos el nombre oficial y el agente
+    // puede ofrecer facturar con RUC (crédito fiscal para el cliente).
+    let padron;
+    try {
+      const r = await api('GET', `/tenants/${tenantId}/consulta/ruc/${cliente.ci}`);
+      const raw = JSON.stringify(r);
+      padron = /"(?:x?dRazCons|razonSocial|name)"\s*:\s*"([^"]+)"/.exec(raw)?.[1];
+    } catch {
+      // sin RUC en el padrón o consulta no disponible — seguimos como CI pura
+    }
     return {
       tipo: 'CI',
       documento: cliente.ci,
-      nombre: cliente.razonSocial ?? '(falta el nombre — pedirlo al usuario)',
-      cliente: { ci: cliente.ci, razonSocial: cliente.razonSocial },
+      nombre: cliente.razonSocial ?? padron ?? '(falta el nombre — pedirlo al usuario)',
+      ...(padron
+        ? {
+            nota: `Esta cédula tiene RUC activo en el padrón (${padron}). Preguntá al usuario si prefiere facturar con RUC ${cliente.ci} (con DV, para su crédito fiscal IVA) en vez de CI.`,
+          }
+        : {}),
+      cliente: { ci: cliente.ci, razonSocial: cliente.razonSocial ?? padron },
     };
   }
   return { tipo: 'Consumidor final', documento: '-', nombre: 'Sin Nombre', cliente: undefined };
@@ -292,6 +308,7 @@ server.tool(
       ].join('\n');
       return ok({
         preview,
+        ...(receptor.nota ? { nota: receptor.nota } : {}),
         // argumentos EXACTOS para emitir_factura tras la confirmación
         argumentosParaEmitir: {
           tenant_id: args.tenant_id,

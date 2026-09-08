@@ -112,8 +112,11 @@ RUN chown -R node:node /app
 USER node
 
 # Healthcheck
+# 127.0.0.1 explícito: en Alpine "localhost" resuelve primero a ::1 (IPv6)
+# y el server escucha solo IPv4 — con localhost el healthcheck da unhealthy
+# con el server perfectamente vivo (deploy Coolify 2026-09-08)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD wget -qO- http://localhost:3000/v1/health || exit 1
+  CMD curl -fsS http://127.0.0.1:3000/v1/health || exit 1
 
 EXPOSE 3000
 ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]

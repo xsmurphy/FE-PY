@@ -55,25 +55,24 @@ credenciales a la sesión Punto.
    el server de Punto como hosting temporal en vez de infra propia.
 
 ## Próximo paso
-**Corregir `timbradoFecha` del tenant prod** — está cargada como
-`2026-02-06` (mal) y la real es `2025-08-26`; hasta que se corrija, toda
-emisión rebota con SIFEN 1107. Ejecutar:
+**CAMBIO DE ARQUITECTURA decidido por el owner al cierre**: la company de
+FE-PY que usa producción es **"Punto"** (`01a08081-413a-7025-b64e-9f3bd112e2c2`,
+key en `company.punto.json` del scratchpad), y **el tenant de Balloon Party
+lo crea Punto desde su propia interfaz** vía API (alta de tenants = parte
+del producto Punto). La company "Actuo" + tenant pre-creado
+(`01a07f03-7335-...`) quedan como entorno de prueba — el PATCH de
+timbradoFecha que figuraba como blocker YA NO APLICA (era de ese tenant
+descartado).
 
-```
-export FEPY_URL=https://fepy.punto.la FEPY_STATE=prod
-node provision.js timbrado-fecha 2025-08-26
-```
-
-(script en el scratchpad de la sesión anterior, puede no existir mañana).
-Si no está: `PATCH /v1/tenants/01a07f03-7335-7739-9869-296d3607797d` con
-body `{"timbradoFecha":"2025-08-26"}` y el API key de `company.prod.json`.
-
-Después, en orden: hand-off de credenciales a Punto (scp de
-`fepy-handoff.json`, comando ya en el chat con el owner) → crear servicio
-WORKER en Coolify (duplicar app, start command `worker`) → avisar a la
-sesión Punto (`local_5c09615b-2531-438e-b575-857b0ceea283`) para el flip →
-emisión de prueba desde prod (`provision.js emitir`) → cuando el owner
-salde DigitalOcean, migrar a droplet propio.
+En orden: (1) owner sube el hand-off de credenciales al server (scp de
+`fepy-handoff.json` con el key de `company.punto.json`, comando en el chat)
+→ (2) la sesión Punto (`local_5c09615b-2531-438e-b575-857b0ceea283`, ya
+avisada con el contrato del alta: timbradoFecha 2025-08-26 EXACTA,
+razonSocial del padrón, numeración FE=614/NC=2) crea el tenant desde su
+flujo y hace el flip → (3) crear servicio WORKER en Coolify (duplicar app,
+start command `worker`) → (4) un ciclo de prueba E2E desde Punto (500 Gs →
+FE 615 → cancelación) → (5) cuando el owner salde DigitalOcean, migrar a
+droplet propio.
 
 ## Trampas conocidas
 - El scratchpad de la sesión anterior

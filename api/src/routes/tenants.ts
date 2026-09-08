@@ -9,6 +9,11 @@ import {
   suspendTenant,
 } from '../services/tenant.service.js';
 import { setNumeracion, listNumeracion } from '../services/numeracion.service.js';
+import { validarRuc } from '../lib/ruc.js';
+import { BadRequestError } from '../lib/errors.js';
+import { db } from '../db/index.js';
+import { tenantCerts, tenantCsc } from '../db/schema.js';
+import { and, eq } from 'drizzle-orm';
 
 // ─────────────────────────────────────────────────────
 // Zod schemas compartidos
@@ -110,6 +115,13 @@ export const tenantRoutes: FastifyPluginAsyncZod = async (app) => {
       },
     },
     async (request, reply) => {
+      // Validación del RUC (formato + dígito verificador módulo 11) — un
+      // tenant con RUC inválido es rechazado por SIFEN recién al emitir;
+      // acá lo atajamos en el alta con error accionable.
+      const rucCheck = validarRuc(request.body.ruc);
+      if (!rucCheck.valid) {
+        throw new BadRequestError(rucCheck.error!);
+      }
       const tenant = await createTenant({
         companyId: request.company!.id,
         ...request.body,
@@ -313,5 +325,118 @@ export const tenantRoutes: FastifyPluginAsyncZod = async (app) => {
       },
     },
     async (request) => ({ data: await listNumeracion(request.tenant!.id) }),
+  );
+
+  // ─────────────────────────────────────────────────────
+  // GET /v1/tenants/:tenant_id/readiness — ¿listo para emitir?
+  //
+  // Checklist de provisioning para integradores (Punto): valida que todo
+  // lo cargado esté completo y utilizable ANTES de la primera emisión.
+  // El integrador lo llama al final de su wizard de alta y muestra el
+  // resultado al usuario. Lo que NO se puede verificar sin emitir
+  // (timbradoFecha exacta vs Marangatú, habilitación del RUC en SIFEN)
+  // queda declarado en `unverifiable`.
+  // ─────────────────────────────────────────────────────
+  app.get(
+    '/tenants/:tenant_id/readiness',
+    {
+      preHandler: [requireAuth, requireTenantScope],
+      schema: {
+        tags: ['tenants'],
+        summary: 'Checklist de provisioning — ¿el tenant está listo para emitir?',
+        security: [{ bearerAuth: [] }],
+        params: z.object({ tenant_id: z.string().uuid() }),
+        response: {
+          200: z.object({
+            ready: z.boolean(),
+            checks: z.array(
+              z.object({
+                check: z.string(),
+                ok: z.boolean(),
+                detail: z.string(),
+              }),
+            ),
+            unverifiable: z.array(z.string()),
+          }),
+        },
+      },
+    },
+    async (request) => {
+      const tenant = request.tenant!;
+      const checks: { check: string; ok: boolean; detail: string }[] = [];
+
+      // 1. Tenant activo
+      checks.push({
+        check: 'tenant_activo',
+        ok: tenant.status === 'active',
+        detail: `status=${tenant.status}`,
+      });
+
+      // 2. RUC con dígito verificador válido
+      const rucCheck = validarRuc(tenant.ruc);
+      checks.push({
+        check: 'ruc_valido',
+        ok: rucCheck.valid,
+        detail: rucCheck.valid ? tenant.ruc : rucCheck.error!,
+      });
+
+      // 3. Certificado cargado, no revocado, vigente
+      const [cert] = await db
+        .select({ revokedAt: tenantCerts.revokedAt, notAfter: tenantCerts.notAfter })
+        .from(tenantCerts)
+        .where(and(eq(tenantCerts.tenantId, tenant.id), eq(tenantCerts.companyId, request.company!.id)))
+        .limit(1);
+      if (!cert) {
+        checks.push({ check: 'certificado', ok: false, detail: 'No hay certificado cargado' });
+      } else if (cert.revokedAt) {
+        checks.push({ check: 'certificado', ok: false, detail: 'El certificado está revocado' });
+      } else if (cert.notAfter < new Date()) {
+        checks.push({ check: 'certificado', ok: false, detail: `Vencido el ${cert.notAfter.toISOString().slice(0, 10)}` });
+      } else {
+        const dias = Math.floor((cert.notAfter.getTime() - Date.now()) / 86_400_000);
+        checks.push({
+          check: 'certificado',
+          ok: true,
+          detail: `Vigente, vence en ${dias} días (${cert.notAfter.toISOString().slice(0, 10)})`,
+        });
+      }
+
+      // 4. CSC configurado (obligatorio para el QR — sin él SIFEN rechaza)
+      const [csc] = await db
+        .select({ cscId: tenantCsc.cscId })
+        .from(tenantCsc)
+        .where(and(eq(tenantCsc.tenantId, tenant.id), eq(tenantCsc.companyId, request.company!.id)))
+        .limit(1);
+      checks.push({
+        check: 'csc',
+        ok: !!csc,
+        detail: csc ? `Configurado (id ${csc.cscId})` : 'Sin CSC — el QR no se puede generar y SIFEN rechaza',
+      });
+
+      // 5. Numeración (informativo: si el integrador manda `numero` explícito
+      //    en cada emisión, no necesita secuencia pre-configurada)
+      const numeraciones = await listNumeracion(tenant.id);
+      checks.push({
+        check: 'numeracion',
+        ok: true,
+        detail:
+          numeraciones.length > 0
+            ? numeraciones.map((n) => `tipo ${n.tipoDocumento} ${n.establecimiento}-${n.punto} → próximo ${n.proximoNumero}`).join('; ')
+            : 'Sin secuencias — ok solo si el integrador manda `numero` explícito en cada emisión',
+      });
+
+      // ready = todos los checks críticos ok (numeración es informativa)
+      const ready = checks.filter((c) => c.check !== 'numeracion').every((c) => c.ok);
+
+      return {
+        ready,
+        checks,
+        unverifiable: [
+          'timbradoFecha exacta vs Marangatú — SIFEN la valida recién al emitir (rechazo 1107 si difiere); sacarla de un KUDE ya emitido o de Marangatú, nunca estimarla',
+          'habilitación del RUC como facturador electrónico — se confirma con la primera emisión real',
+          'razonSocial vs padrón — verificable con GET /consulta/ruc/:ruc (requiere cert ya cargado)',
+        ],
+      };
+    },
   );
 };

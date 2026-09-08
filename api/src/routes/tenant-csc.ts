@@ -28,7 +28,9 @@ export const tenantCscRoutes: FastifyPluginAsyncZod = async (app) => {
         params: z.object({ tenant_id: z.string().uuid() }),
         body: z.object({
           cscId: z.string().min(1).max(10),
-          csc: z.string().min(10).max(256),
+          // CSC real de SIFEN: exactamente 32 alfanuméricos (verificado con
+          // CSC de producción) — atajamos truncados/copias con espacios acá
+          csc: z.string().regex(/^[A-Za-z0-9]{32}$/, 'El CSC debe ser exactamente 32 caracteres alfanuméricos'),
         }),
         response: {
           200: cscMetadataResponse,

@@ -269,6 +269,14 @@ const server = new McpServer(
   {
     instructions: `Facturación electrónica legal de Paraguay (SIFEN) vía FE-PY.
 
+ONBOARDING DE UN CONTRIBUYENTE NUEVO (en orden, pidiendo al usuario cada dato):
+1. crear_tenant — pedir: constancia de RUC (da razón social EXACTA, actividad económica, dirección fiscal), número de timbrado electrónico y su fecha de inicio de vigencia. La fecha DEBE salir de Marangatú o de un KUDE ya emitido — NUNCA estimarla ni aceptar "de memoria" (rechazo 1107 garantizado si difiere; ya pasó en producción).
+2. subir_certificado — pedir la ruta del archivo .p12 y su contraseña.
+3. configurar_csc — el usuario lo genera/obtiene en eKuatia (ekuatia.set.gov.py, Perfil → CSC); generar uno nuevo NO rompe el de otro proveedor de facturación.
+4. configurar_numeracion — SOLO si el cliente migra con correlativo avanzado (preguntá el último número emitido en su punto de expedición). Usar un punto de expedición DISTINTO al de su sistema anterior si sigue activo (colisión de numeración = rechazos en su operación).
+5. estado_tenant — repetir hasta ready=true; mostrar los checks al usuario.
+6. Primera emisión: factura mínima real (ej. 500 Gs) con el flujo de vista previa de abajo — es la única forma de validar timbradoFecha y habilitación del RUC contra SIFEN.
+
 FLUJO OBLIGATORIO PARA EMITIR (ejemplo: el usuario dice "hacé factura al RUC 7659394-0 por 500000 concepto: Hs de desarrollo web"):
 1. Armá los ítems desde el pedido (descripcion="Hs de desarrollo web", cantidad=1, precioUnitario=500000, iva=10 salvo que digan otra cosa).
 2. Llamá previsualizar_factura — resuelve la razón social real del padrón y calcula el total. Si devuelve "(no se pudo resolver...)" o "(falta el nombre...)", pedile el dato al usuario antes de seguir.
@@ -284,6 +292,159 @@ REGLAS:
 - Nunca inventes RUC, razón social ni precios: pedilos al usuario o verificalos con consultar_ruc.
 - Montos en guaraníes (PYG) sin decimales; el IVA va incluido en el precio unitario.
 - Ante cualquier error 4xx el mensaje del API dice exactamente qué corregir — mostralo al usuario.`,
+  },
+);
+
+// ─────────────────────────────────────────────────────────────────
+// Onboarding de tenants (alta completa desde el agente)
+// ─────────────────────────────────────────────────────────────────
+server.tool(
+  'crear_tenant',
+  'Da de alta un CONTRIBUYENTE EMISOR (tenant) nuevo en FE-PY. Paso 1 del onboarding. ' +
+    'El RUC puede ir sin dígito verificador (se calcula). CRÍTICO: timbradoFecha debe ser ' +
+    'EXACTAMENTE la fecha de inicio de vigencia que figura en Marangatú o en un KUDE ya emitido ' +
+    '— NUNCA estimarla (SIFEN rechaza con 1107 si difiere). razonSocial: la del padrón/constancia ' +
+    'de RUC (formato "APELLIDOS, NOMBRES" para persona física), no el nombre comercial.',
+  {
+    ruc: z.string().describe('RUC, con o sin DV (ej "3595193" o "3595193-1")'),
+    razonSocial: z.string().describe('Razón social EXACTA del padrón/constancia'),
+    nombreFantasia: z.string().optional().describe('Nombre comercial'),
+    timbradoNumero: z.string(),
+    timbradoFecha: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe('Inicio de vigencia EXACTO (YYYY-MM-DD)'),
+    tipoContribuyente: z.union([z.literal(1), z.literal(2)]).describe('1=persona física, 2=jurídica'),
+    actividadCodigo: z.string().describe('Código de actividad económica (constancia de RUC)'),
+    actividadDescripcion: z.string(),
+    establecimiento: z.string().regex(/^\d{1,3}$/).default('001'),
+    direccion: z.string().describe('Dirección fiscal (constancia de RUC)'),
+    numeroCasa: z.string().default('0'),
+    departamento: z.number().int().default(1).describe('Código SIFEN (1=CAPITAL)'),
+    departamentoDescripcion: z.string().default('CAPITAL'),
+    distrito: z.number().int().default(1),
+    distritoDescripcion: z.string().default('ASUNCION (DISTRITO)'),
+    ciudad: z.number().int().default(1),
+    ciudadDescripcion: z.string().default('ASUNCION (DISTRITO)'),
+    telefono: z.string().optional(),
+    email: z.string().email().optional(),
+  },
+  async (args) => {
+    try {
+      const body = {
+        ruc: args.ruc,
+        razonSocial: args.razonSocial,
+        nombreFantasia: args.nombreFantasia ?? args.razonSocial,
+        timbradoNumero: args.timbradoNumero,
+        timbradoFecha: args.timbradoFecha,
+        tipoContribuyente: args.tipoContribuyente,
+        tipoRegimen: 8,
+        env: 'prod',
+        actividadesEconomicas: [{ codigo: args.actividadCodigo, descripcion: args.actividadDescripcion }],
+        establecimientos: [
+          {
+            codigo: args.establecimiento,
+            direccion: args.direccion,
+            numeroCasa: args.numeroCasa,
+            departamento: args.departamento,
+            departamentoDescripcion: args.departamentoDescripcion,
+            distrito: args.distrito,
+            distritoDescripcion: args.distritoDescripcion,
+            ciudad: args.ciudad,
+            ciudadDescripcion: args.ciudadDescripcion,
+            ...(args.telefono ? { telefono: args.telefono } : {}),
+            ...(args.email ? { email: args.email } : {}),
+            denominacion: 'MATRIZ',
+          },
+        ],
+      };
+      const r = await api('POST', '/tenants', body);
+      return ok({
+        tenantId: r.id,
+        ruc: r.ruc,
+        razonSocial: r.razonSocial,
+        env: r.env,
+        siguientePaso: 'subir_certificado con el .p12 del contribuyente',
+      });
+    } catch (e) {
+      return fail(e);
+    }
+  },
+);
+
+server.tool(
+  'subir_certificado',
+  'Sube el certificado digital .p12 del contribuyente (paso 2 del onboarding). El archivo debe ' +
+    'estar en el disco local; la contraseña la provee el usuario. FE-PY valida vigencia, password ' +
+    'y que el RUC del certificado coincida con el del tenant; se guarda cifrado (envelope encryption).',
+  {
+    tenant_id: tenantIdSchema,
+    p12Path: z.string().describe('Ruta local absoluta al archivo .p12'),
+    password: z.string().describe('Contraseña del certificado'),
+  },
+  async (args) => {
+    try {
+      const { readFileSync } = await import('node:fs');
+      const buf = readFileSync(args.p12Path);
+      const form = new FormData();
+      form.append('file', new Blob([buf]), 'cert.p12');
+      form.append('password', args.password);
+      const apiKey = currentApiKey();
+      const res = await fetch(`${BASE}/v1/tenants/${tenantOf(args)}/cert`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${apiKey}` },
+        body: form,
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(`FE-PY ${res.status}: ${json?.error?.message ?? JSON.stringify(json)}`);
+      return ok({ ...json, siguientePaso: 'configurar_csc con el CSC del portal eKuatia' });
+    } catch (e) {
+      return fail(e);
+    }
+  },
+);
+
+server.tool(
+  'configurar_csc',
+  'Configura el Código de Seguridad del Contribuyente (paso 3 del onboarding). El CSC sale del ' +
+    'portal eKuatia del contribuyente (32 caracteres alfanuméricos) — obligatorio para el QR; ' +
+    'sin él SIFEN rechaza toda emisión.',
+  {
+    tenant_id: tenantIdSchema,
+    cscId: z.string().min(1).max(10).describe('Id del CSC, típicamente "0001"'),
+    csc: z.string().regex(/^[A-Za-z0-9]{32}$/).describe('CSC de 32 caracteres'),
+  },
+  async (args) => {
+    try {
+      const r = await api('PUT', `/tenants/${tenantOf(args)}/csc`, { cscId: args.cscId, csc: args.csc });
+      return ok({ ...r, siguientePaso: 'configurar_numeracion si migra correlativo; si no, estado_tenant' });
+    } catch (e) {
+      return fail(e);
+    }
+  },
+);
+
+server.tool(
+  'configurar_numeracion',
+  'Setea el correlativo inicial (paso 4, SOLO para clientes que migran de otro sistema de ' +
+    'facturación con numeración avanzada). ultimoNumero = último YA usado; la próxima emisión ' +
+    'sale con +1. Cliente nuevo sin historia: NO llamar esta tool (arranca en 1 solo).',
+  {
+    tenant_id: tenantIdSchema,
+    tipoDocumento: z.number().int().min(1).max(8).default(1).describe('1=FE, 5=NC'),
+    establecimiento: z.string().regex(/^\d{1,3}$/),
+    punto: z.string().regex(/^\d{1,3}$/),
+    ultimoNumero: z.number().int().min(0).max(9999999),
+  },
+  async (args) => {
+    try {
+      const r = await api('PUT', `/tenants/${tenantOf(args)}/numeracion`, {
+        tipoDocumento: args.tipoDocumento,
+        establecimiento: args.establecimiento,
+        punto: args.punto,
+        ultimoNumero: args.ultimoNumero,
+      });
+      return ok({ ...r, siguientePaso: 'estado_tenant para verificar readiness' });
+    } catch (e) {
+      return fail(e);
+    }
   },
 );
 

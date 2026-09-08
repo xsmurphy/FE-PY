@@ -299,6 +299,30 @@ REGLAS:
 // Onboarding de tenants (alta completa desde el agente)
 // ─────────────────────────────────────────────────────────────────
 server.tool(
+  'listar_tenants',
+  'Lista los contribuyentes (tenants) de la company con su estado. Usar cuando el usuario ' +
+    'gestiona varios clientes, para identificar el tenant_id correcto antes de operar. ' +
+    'Si el usuario nombra un cliente ("facturá para X"), buscarlo acá primero.',
+  { limit: z.number().int().min(1).max(100).default(50) },
+  async (args) => {
+    try {
+      const r = await api('GET', `/tenants?limit=${args.limit}`);
+      const data = (r.data ?? r).map?.((t) => ({
+        tenantId: t.id,
+        ruc: t.ruc,
+        razonSocial: t.razonSocial,
+        nombreFantasia: t.nombreFantasia,
+        env: t.env,
+        status: t.status,
+      })) ?? r;
+      return ok(data);
+    } catch (e) {
+      return fail(e);
+    }
+  },
+);
+
+server.tool(
   'crear_tenant',
   'Da de alta un CONTRIBUYENTE EMISOR (tenant) nuevo en FE-PY. Paso 1 del onboarding. ' +
     'El RUC puede ir sin dígito verificador (se calcula). CRÍTICO: timbradoFecha debe ser ' +

@@ -194,7 +194,30 @@ const resumen = (r) => ({
 // ─────────────────────────────────────────────────────────────────
 // Server + tools
 // ─────────────────────────────────────────────────────────────────
-const server = new McpServer({ name: 'fepy', version: '0.1.0' });
+const server = new McpServer(
+  { name: 'fepy', version: '0.1.0' },
+  {
+    instructions: `Facturación electrónica legal de Paraguay (SIFEN) vía FE-PY.
+
+FLUJO PARA EMITIR UN COMPROBANTE (seguir en orden):
+1. Verificá el tenant con estado_tenant — si ready=false, mostrá al usuario qué falta (cert, CSC, numeración) y NO emitas.
+2. Identificá al receptor:
+   - Consumidor final sin identificar → omití "cliente" (sale "Sin Nombre"). OJO: una factura innominada NO puede recibir nota de crédito después.
+   - Cliente con RUC → verificá primero con consultar_ruc y usá la razón social EXACTA del padrón que devuelve (SIFEN valida contra el padrón).
+   - Cliente con cédula → cliente.ci + cliente.razonSocial (nombre completo).
+3. CONFIRMÁ con el usuario antes de emitir: ítems, cantidades, precios (IVA incluido), total, receptor y punto de expedición. La emisión genera un documento fiscal REAL con validez tributaria — no es reversible salvo por cancelación (48h) o nota de crédito.
+4. Emití con emitir_factura. Interpretá el resultado:
+   - estado "aprobado" → documento legal emitido; informá CDC, número y kudeUrl (PDF para el cliente).
+   - estado "rechazado" → NO se emitió nada (sin efecto fiscal); mostrá sifen.mensaje, corregí y reintentá.
+   - estado "pendiente" → SIFEN aún procesa; re-consultá con consultar_documento en ~1 min.
+5. Devoluciones/correcciones sobre una factura aprobada → emitir_nota_credito con el CDC asociado y el MISMO receptor (identificado). Anulación total dentro de las 48h → cancelar_documento.
+
+REGLAS:
+- Nunca inventes RUC, razón social ni precios: pedilos al usuario o verificalos con consultar_ruc.
+- Montos en guaraníes (PYG) sin decimales; el IVA va incluido en el precio unitario.
+- Ante cualquier error 4xx el mensaje del API dice exactamente qué corregir — mostralo al usuario.`,
+  },
+);
 
 server.tool(
   'emitir_factura',

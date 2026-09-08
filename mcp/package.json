@@ -15,5 +15,9 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "exports": {
+    ".": "./server.mjs",
+    "./lib": "./lib.mjs"
   }
 }

@@ -65,6 +65,8 @@ WORKDIR /app/api
 # Lockfile + npm ci: build REPRODUCIBLE. Sin el lock, cada build resolvía
 # versiones nuevas y "compila local, rompe en el server" (deploy 2026-09-08:
 # un fastify más nuevo cambió los tipos y tumbó el build).
+# fepy-mcp (dependencia file:../mcp) debe existir ANTES del npm ci
+COPY mcp /app/mcp
 COPY api/package.json api/package-lock.json api/tsconfig.json ./
 RUN npm ci --ignore-scripts --include=dev
 
@@ -99,6 +101,7 @@ COPY --from=api-builder /app/xsd-unsigned /app/xsd-unsigned
 
 # API — instalamos solo deps de producción
 WORKDIR /app/api
+COPY mcp /app/mcp
 COPY api/package.json api/package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 

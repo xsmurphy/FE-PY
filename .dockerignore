@@ -34,3 +34,4 @@ PLAN.md
 # Scripts locales de testing manual
 test-ui.js
 test-local.js
+mcp/node_modules

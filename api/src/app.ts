@@ -26,6 +26,7 @@ import { eventoRoutes } from './routes/eventos.js';
 import { batchRoutes } from './routes/batches.js';
 import { consultaRoutes } from './routes/consultas.js';
 import { registerPlayground } from './routes/playground.js';
+import { registerMcp } from './routes/mcp.js';
 
 const parseCorsOrigins = (raw: string): string[] | boolean => {
   const trimmed = raw.trim();
@@ -240,6 +241,10 @@ export const buildApp = async () => {
     health: '/v1/health',
     env: env.NODE_ENV,
   }));
+
+  // MCP embebido en /mcp — agentes IA (claude.ai Connectors, Claude Code)
+  // operan FE-PY con auth Bearer por request. Ver routes/mcp.ts.
+  registerMcp(app as unknown as Parameters<typeof registerMcp>[0]);
 
   // Playground UI — HTML interactivo para probar la API sin Postman/curl.
   // Sirve en el mismo origen para evitar CORS. Gated: SOLO dev/staging

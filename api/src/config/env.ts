@@ -63,6 +63,13 @@ const envSchema = z.object({
     .default('true')
     .transform((v) => v === 'true'),
 
+  // Playground HTML de pruebas — SOLO dev/staging. Default false: en prod
+  // nadie tiene que acordarse de apagarlo.
+  ENABLE_PLAYGROUND: z
+    .string()
+    .default('false')
+    .transform((v) => v === 'true'),
+
   SENTRY_DSN: z.string().url().optional().or(z.literal('')),
   SENTRY_ENVIRONMENT: z.string().default('development'),
   SENTRY_TRACES_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(0.1),

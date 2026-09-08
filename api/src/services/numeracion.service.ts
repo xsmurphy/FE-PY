@@ -19,7 +19,9 @@
  */
 import { eq, and, sql } from 'drizzle-orm';
 import type { PgTransaction } from 'drizzle-orm/pg-core';
-import { numeracion } from '../db/schema.js';
+import { db } from '../db/index.js';
+import { numeracion, documents } from '../db/schema.js';
+import { ConflictError } from '../lib/errors.js';
 
 // Tipo genérico de transacción Drizzle — no exportamos el tipo postgres-js
 // específico para no acoplar el service al driver.
@@ -89,6 +91,104 @@ export const asignarSiguienteNumero = async (
   }
 
   return String(nextNumber).padStart(7, '0');
+};
+
+/**
+ * Modo "numeración del tenant": el cliente mandó `numero` explícito en la
+ * emisión. Sincroniza la secuencia interna hacia ARRIBA (GREATEST) para que
+ * el modo automático siga coherente si se mezclan modos — nunca retrocede.
+ * DEBE correr dentro de la misma transacción que el insert del documento.
+ */
+export const registrarNumeroExplicito = async (
+  tx: Tx,
+  input: AsignarNumeroInput & { numero: number },
+): Promise<void> => {
+  await tx.execute(sql`
+    INSERT INTO numeracion (tenant_id, tipo, establecimiento, punto, ultimo_numero)
+    VALUES (${input.tenantId}, ${input.tipo}, ${input.establecimiento}, ${input.punto}, ${input.numero})
+    ON CONFLICT (tenant_id, tipo, establecimiento, punto)
+    DO UPDATE SET ultimo_numero = GREATEST(numeracion.ultimo_numero, ${input.numero}),
+                  updated_at = now()
+  `);
+};
+
+/**
+ * Setea el correlativo de un (tenant, tipo, establecimiento, punto) —
+ * onboarding de clientes que migran desde otro sistema de facturación con
+ * numeración ya avanzada (ej. Balloon Party llegó emitiendo por otro
+ * proveedor y su próximo número era 612: ultimoNumero=611).
+ *
+ * `ultimoNumero` = último número YA usado; el próximo emitido será +1.
+ *
+ * Guard anti-colisión: no se permite retroceder por debajo del mayor número
+ * ACTIVO ya emitido en ese scope (docs rechazado/error no cuentan — su
+ * número es fiscalmente reutilizable, ver índice parcial en schema).
+ */
+export const setNumeracion = async (input: {
+  tenantId: string;
+  tipo: number;
+  establecimiento: string;
+  punto: string;
+  ultimoNumero: number;
+}): Promise<{ ultimoNumero: number; proximoNumero: number }> => {
+  const [maxRow] = await db
+    .select({ max: sql<string>`COALESCE(MAX(${documents.numero}::int), 0)` })
+    .from(documents)
+    .where(
+      and(
+        eq(documents.tenantId, input.tenantId),
+        eq(documents.tipo, input.tipo),
+        eq(documents.establecimiento, input.establecimiento),
+        eq(documents.punto, input.punto),
+        sql`${documents.estado} NOT IN ('rechazado', 'error')`,
+      ),
+    );
+  const maxActivo = Number(maxRow?.max ?? 0);
+  if (input.ultimoNumero < maxActivo) {
+    throw new ConflictError(
+      `ultimoNumero=${input.ultimoNumero} es menor que el mayor número activo ya emitido (${maxActivo}) — colisionaría en la próxima emisión`,
+    );
+  }
+
+  await db
+    .insert(numeracion)
+    .values({
+      tenantId: input.tenantId,
+      tipo: input.tipo,
+      establecimiento: input.establecimiento,
+      punto: input.punto,
+      ultimoNumero: input.ultimoNumero,
+    })
+    .onConflictDoUpdate({
+      target: [numeracion.tenantId, numeracion.tipo, numeracion.establecimiento, numeracion.punto],
+      set: { ultimoNumero: input.ultimoNumero, updatedAt: new Date() },
+    });
+
+  return { ultimoNumero: input.ultimoNumero, proximoNumero: input.ultimoNumero + 1 };
+};
+
+/**
+ * Lista la numeración vigente de un tenant (todas las secuencias).
+ */
+export const listNumeracion = async (tenantId: string) => {
+  const rows = await db
+    .select({
+      tipo: numeracion.tipo,
+      establecimiento: numeracion.establecimiento,
+      punto: numeracion.punto,
+      ultimoNumero: numeracion.ultimoNumero,
+      updatedAt: numeracion.updatedAt,
+    })
+    .from(numeracion)
+    .where(eq(numeracion.tenantId, tenantId));
+  return rows.map((r) => ({
+    tipoDocumento: r.tipo,
+    establecimiento: r.establecimiento,
+    punto: r.punto,
+    ultimoNumero: Number(r.ultimoNumero),
+    proximoNumero: Number(r.ultimoNumero) + 1,
+    updatedAt: r.updatedAt.toISOString(),
+  }));
 };
 
 /**

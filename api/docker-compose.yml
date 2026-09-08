@@ -33,6 +33,7 @@ services:
       MASTER_KEY_BASE64: ${MASTER_KEY_BASE64:?MASTER_KEY_BASE64 is required}
       ENABLE_SIFEN: ${ENABLE_SIFEN:-false}
       ENABLE_KUDE: ${ENABLE_KUDE:-false}
+      ENABLE_PLAYGROUND: ${ENABLE_PLAYGROUND:-true}  # dev local: on. Prod: NO setear (default false)
       JAVA_PATH: /usr/lib/jvm/default-jvm/bin/java
     command: ["api"]
     depends_on:

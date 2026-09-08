@@ -15,6 +15,13 @@
       "when": 1788821844316,
       "tag": "0001_sifen_lote_fields",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788828353715,
+      "tag": "0002_partial_unique_numero",
+      "breakpoints": true
     }
   ]
 }

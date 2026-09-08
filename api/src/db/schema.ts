@@ -15,6 +15,7 @@ import {
   pgEnum,
   customType,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { v7 as uuidv7 } from 'uuid';
 
 /**
@@ -253,13 +254,13 @@ export const documents = pgTable(
   },
   (t) => ({
     cdcUnique: uniqueIndex('documents_cdc_unique').on(t.cdc),
-    tenantNumeroUnique: uniqueIndex('documents_tenant_numero_unique').on(
-      t.tenantId,
-      t.tipo,
-      t.establecimiento,
-      t.punto,
-      t.numero,
-    ),
+    // Unicidad PARCIAL: los docs rechazados/error no bloquean el número —
+    // SIFEN no los registra, así que el número es fiscalmente reutilizable
+    // (verificado en producción 2026-09-07: reintentar tras rechazo rompía
+    // con duplicate key y obligaba a borrar la fila muerta a mano)
+    tenantNumeroUnique: uniqueIndex('documents_tenant_numero_unique')
+      .on(t.tenantId, t.tipo, t.establecimiento, t.punto, t.numero)
+      .where(sql`estado NOT IN ('rechazado', 'error')`),
     companyTenantCreatedIdx: index('documents_company_tenant_created_idx').on(
       t.companyId,
       t.tenantId,

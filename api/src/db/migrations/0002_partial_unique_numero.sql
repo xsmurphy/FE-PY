@@ -1,0 +1,2 @@
+DROP INDEX IF EXISTS "documents_tenant_numero_unique";--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "documents_tenant_numero_unique" ON "documents" USING btree ("tenant_id","tipo","establecimiento","punto","numero") WHERE estado NOT IN ('rechazado', 'error');

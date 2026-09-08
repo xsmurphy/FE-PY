@@ -230,14 +230,17 @@ export const buildApp = async () => {
     service: 'facturacion-api',
     version: '0.1.0',
     docs: env.ENABLE_API_DOCS ? '/docs' : null,
-    playground: '/playground',
+    playground: env.ENABLE_PLAYGROUND ? '/playground' : null,
     health: '/v1/health',
     env: env.NODE_ENV,
   }));
 
   // Playground UI — HTML interactivo para probar la API sin Postman/curl.
-  // Sirve en el mismo origen para evitar CORS.
-  registerPlayground(app);
+  // Sirve en el mismo origen para evitar CORS. Gated: SOLO dev/staging
+  // (permite provisionar companies/tenants desde el browser).
+  if (env.ENABLE_PLAYGROUND) {
+    registerPlayground(app);
+  }
 
   return app;
 };

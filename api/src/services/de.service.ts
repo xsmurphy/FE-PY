@@ -24,7 +24,7 @@ import { randomUUID } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { documents, tenantCerts, type Tenant } from '../db/schema.js';
-import { asignarSiguienteNumero } from './numeracion.service.js';
+import { asignarSiguienteNumero, registrarNumeroExplicito } from './numeracion.service.js';
 import { validatePreSigning, validatePostSigning } from '../lib/xsd-validator.js';
 import { extractCdc, generateCodigoSeguridad } from '../lib/cdc.js';
 import {
@@ -39,6 +39,7 @@ import { enqueueSifenRetry } from '../queue/queues.js';
 import { env } from '../config/env.js';
 import {
   BadRequestError,
+  ConflictError,
   ValidationError,
   NotFoundError,
   SifenError,
@@ -216,15 +217,40 @@ export const createDeDocument = async (input: CreateDeInput): Promise<CreateDeRe
     throw new BadRequestError('establecimiento y punto deben ser 3 dígitos');
   }
 
+  // Numeración en dos modos:
+  //   - automática (default): la secuencia interna asigna el próximo número
+  //   - del tenant: el body trae `numero` explícito (ERPs que llevan su
+  //     propio correlativo); la secuencia interna se sincroniza hacia arriba
+  //     para que mezclar modos nunca colisione
+  const numeroExplicito =
+    body.numero != null && String(body.numero).trim() !== ''
+      ? Number.parseInt(String(body.numero), 10)
+      : null;
+  if (numeroExplicito != null && (!Number.isInteger(numeroExplicito) || numeroExplicito < 1 || numeroExplicito > 9_999_999)) {
+    throw new BadRequestError('numero debe ser un entero entre 1 y 9999999');
+  }
+
   // Toda la operación de reserva+insert va en una transacción
   const result = await db.transaction(async (tx) => {
-    // 1. Reservar siguiente número
-    const numero = await asignarSiguienteNumero(tx as unknown as Parameters<typeof asignarSiguienteNumero>[0], {
-      tenantId: tenant.id,
-      tipo: tipoDocumento,
-      establecimiento,
-      punto,
-    });
+    // 1. Número: explícito del tenant o siguiente de la secuencia
+    let numero: string;
+    if (numeroExplicito != null) {
+      numero = String(numeroExplicito).padStart(7, '0');
+      await registrarNumeroExplicito(tx as unknown as Parameters<typeof registrarNumeroExplicito>[0], {
+        tenantId: tenant.id,
+        tipo: tipoDocumento,
+        establecimiento,
+        punto,
+        numero: numeroExplicito,
+      });
+    } else {
+      numero = await asignarSiguienteNumero(tx as unknown as Parameters<typeof asignarSiguienteNumero>[0], {
+        tenantId: tenant.id,
+        tipo: tipoDocumento,
+        establecimiento,
+        punto,
+      });
+    }
 
     // 2. Preparar data para xmlgen
     const codigoSeguridad = String(body.codigoSeguridadAleatorio ?? generateCodigoSeguridad()).padStart(
@@ -264,6 +290,18 @@ export const createDeDocument = async (input: CreateDeInput): Promise<CreateDeRe
       .returning({ id: documents.id });
 
     return { docId: docRow.id, dataForXmlgen, numero };
+  }).catch((txErr: unknown) => {
+    // Duplicate key en el índice parcial de número = número ya emitido y
+    // ACTIVO (aprobado/en curso) en ese scope. 409 legible, no 500.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pgErr = txErr as any;
+    if (pgErr?.code === '23505' && String(pgErr?.constraint_name ?? pgErr?.constraint ?? '').includes('documents_tenant_numero')) {
+      throw new ConflictError(
+        `Ya existe un documento activo con ese número para tipo=${tipoDocumento} ${establecimiento}-${punto}. ` +
+          'Los números de documentos rechazados/error sí son reutilizables.',
+      );
+    }
+    throw txErr;
   });
 
   const { docId, dataForXmlgen, numero } = result;

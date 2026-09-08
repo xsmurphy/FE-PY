@@ -8,6 +8,7 @@ import {
   updateTenant,
   suspendTenant,
 } from '../services/tenant.service.js';
+import { setNumeracion, listNumeracion } from '../services/numeracion.service.js';
 
 // ─────────────────────────────────────────────────────
 // Zod schemas compartidos
@@ -235,5 +236,82 @@ export const tenantRoutes: FastifyPluginAsyncZod = async (app) => {
       reply.status(204);
       return;
     },
+  );
+
+  // ─────────────────────────────────────────────────────
+  // PUT /v1/tenants/:tenant_id/numeracion — setear correlativo
+  //
+  // Onboarding de clientes que migran con numeración avanzada: setea el
+  // último número usado; la próxima emisión sale con +1. Rechaza (409)
+  // retroceder por debajo del mayor número activo ya emitido.
+  // ─────────────────────────────────────────────────────
+  app.put(
+    '/tenants/:tenant_id/numeracion',
+    {
+      preHandler: [requireAuth, requireTenantScope],
+      schema: {
+        tags: ['tenants'],
+        summary: 'Setear el correlativo de numeración (onboarding/migración)',
+        security: [{ bearerAuth: [] }],
+        params: z.object({ tenant_id: z.string().uuid() }),
+        body: z.object({
+          tipoDocumento: z.number().int().min(1).max(8),
+          establecimiento: z.string().regex(/^\d{3}$/),
+          punto: z.string().regex(/^\d{3}$/),
+          ultimoNumero: z.number().int().min(0).max(9_999_999),
+        }),
+        response: {
+          200: z.object({
+            tipoDocumento: z.number(),
+            establecimiento: z.string(),
+            punto: z.string(),
+            ultimoNumero: z.number(),
+            proximoNumero: z.number(),
+          }),
+        },
+      },
+    },
+    async (request) => {
+      const { tipoDocumento, establecimiento, punto, ultimoNumero } = request.body;
+      const result = await setNumeracion({
+        tenantId: request.tenant!.id,
+        tipo: tipoDocumento,
+        establecimiento,
+        punto,
+        ultimoNumero,
+      });
+      return { tipoDocumento, establecimiento, punto, ...result };
+    },
+  );
+
+  // ─────────────────────────────────────────────────────
+  // GET /v1/tenants/:tenant_id/numeracion — secuencias vigentes
+  // ─────────────────────────────────────────────────────
+  app.get(
+    '/tenants/:tenant_id/numeracion',
+    {
+      preHandler: [requireAuth, requireTenantScope],
+      schema: {
+        tags: ['tenants'],
+        summary: 'Listar las secuencias de numeración del tenant',
+        security: [{ bearerAuth: [] }],
+        params: z.object({ tenant_id: z.string().uuid() }),
+        response: {
+          200: z.object({
+            data: z.array(
+              z.object({
+                tipoDocumento: z.number(),
+                establecimiento: z.string(),
+                punto: z.string(),
+                ultimoNumero: z.number(),
+                proximoNumero: z.number(),
+                updatedAt: z.string(),
+              }),
+            ),
+          }),
+        },
+      },
+    },
+    async (request) => ({ data: await listNumeracion(request.tenant!.id) }),
   );
 };

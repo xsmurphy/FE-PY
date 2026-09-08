@@ -184,6 +184,17 @@ const buildItems = (items) =>
 
 const fmtGs = (n) => new Intl.NumberFormat('es-PY').format(n);
 
+/** Dígito verificador del RUC paraguayo (módulo 11) — mismo algoritmo del API. */
+const dvRuc = (base) => {
+  let k = 2, total = 0;
+  for (let i = base.length - 1; i >= 0; i--) {
+    if (k > 11) k = 2;
+    total += Number(base[i]) * k++;
+  }
+  const resto = total % 11;
+  return resto > 1 ? 11 - resto : 0;
+};
+
 const estPunto = (args) => {
   const establecimiento = args.establecimiento ?? DEFAULT_EST;
   const punto = args.punto ?? DEFAULT_PUNTO;
@@ -208,9 +219,9 @@ const resolverReceptor = async (tenantId, cliente) => {
     };
   }
   if (cliente?.ci) {
-    // En Paraguay el RUC de persona física = cédula + DV: intentamos el
-    // padrón. Si tiene RUC activo, recuperamos el nombre oficial y el agente
-    // puede ofrecer facturar con RUC (crédito fiscal para el cliente).
+    // En Paraguay el RUC de persona física = cédula + DV: consultamos el
+    // padrón. Si la persona tiene RUC activo, la factura SALE CON RUC
+    // automáticamente (crédito fiscal para el cliente, sin preguntar).
     let padron;
     try {
       const r = await api('GET', `/tenants/${tenantId}/consulta/ruc/${cliente.ci}`);
@@ -219,16 +230,21 @@ const resolverReceptor = async (tenantId, cliente) => {
     } catch {
       // sin RUC en el padrón o consulta no disponible — seguimos como CI pura
     }
+    if (padron) {
+      const ruc = `${cliente.ci}-${dvRuc(cliente.ci)}`;
+      return {
+        tipo: 'RUC',
+        documento: ruc,
+        nombre: padron,
+        nota: `La cédula ${cliente.ci} tiene RUC activo — la factura sale con RUC ${ruc} (crédito fiscal IVA para el cliente).`,
+        cliente: { ruc, razonSocial: padron },
+      };
+    }
     return {
       tipo: 'CI',
       documento: cliente.ci,
-      nombre: cliente.razonSocial ?? padron ?? '(falta el nombre — pedirlo al usuario)',
-      ...(padron
-        ? {
-            nota: `Esta cédula tiene RUC activo en el padrón (${padron}). Preguntá al usuario si prefiere facturar con RUC ${cliente.ci} (con DV, para su crédito fiscal IVA) en vez de CI.`,
-          }
-        : {}),
-      cliente: { ci: cliente.ci, razonSocial: cliente.razonSocial ?? padron },
+      nombre: cliente.razonSocial ?? '(falta el nombre — pedirlo al usuario)',
+      cliente: { ci: cliente.ci, razonSocial: cliente.razonSocial },
     };
   }
   return { tipo: 'Consumidor final', documento: '-', nombre: 'Sin Nombre', cliente: undefined };

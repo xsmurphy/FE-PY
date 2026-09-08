@@ -286,8 +286,8 @@ const server = new McpServer(
 
 ONBOARDING DE UN CONTRIBUYENTE NUEVO (en orden, pidiendo al usuario cada dato):
 1. crear_tenant — pedir: constancia de RUC (da razón social EXACTA, actividad económica, dirección fiscal), número de timbrado electrónico y su fecha de inicio de vigencia. La fecha DEBE salir de Marangatú o de un KUDE ya emitido — NUNCA estimarla ni aceptar "de memoria" (rechazo 1107 garantizado si difiere; ya pasó en producción).
-2. subir_certificado — pedir la ruta del archivo .p12 y su contraseña.
-3. configurar_csc — el usuario lo genera/obtiene en eKuatia (ekuatia.set.gov.py, Perfil → CSC); generar uno nuevo NO rompe el de otro proveedor de facturación.
+2. generar_link_credenciales — devuelve un link de un solo uso; pasáselo al contribuyente para que suba SU certificado .p12, la contraseña y el CSC. PROHIBIDO pedir esas credenciales por el chat (quedan en el historial). Si el usuario te las ofrece igual, rechazalas y mandale el link. El CSC lo obtiene en ekuatia.set.gov.py (Perfil → CSC); generar uno nuevo NO rompe el de otro proveedor.
+3. (el contribuyente completa el formulario del link — esperá su confirmación)
 4. configurar_numeracion — SOLO si el cliente migra con correlativo avanzado (preguntá el último número emitido en su punto de expedición). Usar un punto de expedición DISTINTO al de su sistema anterior si sigue activo (colisión de numeración = rechazos en su operación).
 5. estado_tenant — repetir hasta ready=true; mostrar los checks al usuario.
 6. Primera emisión: factura mínima real (ej. 500 Gs) con el flujo de vista previa de abajo — es la única forma de validar timbradoFecha y habilitación del RUC contra SIFEN.
@@ -409,51 +409,27 @@ server.tool(
 );
 
 server.tool(
-  'subir_certificado',
-  'Sube el certificado digital .p12 del contribuyente (paso 2 del onboarding). El archivo debe ' +
-    'estar en el disco local; la contraseña la provee el usuario. FE-PY valida vigencia, password ' +
-    'y que el RUC del certificado coincida con el del tenant; se guarda cifrado (envelope encryption).',
+  'generar_link_credenciales',
+  'Paso 2 del onboarding: genera un LINK DE UN SOLO USO para que el contribuyente cargue él ' +
+    'mismo su certificado .p12, la contraseña y el CSC. Pasale el link por un canal directo ' +
+    '(WhatsApp, mail). NUNCA pidas la contraseña del certificado ni el CSC por el chat: son ' +
+    'credenciales que permiten firmar documentos fiscales en su nombre y quedarían en el ' +
+    'historial de la conversación.',
   {
     tenant_id: tenantIdSchema,
-    p12Path: z.string().describe('Ruta local absoluta al archivo .p12'),
-    password: z.string().describe('Contraseña del certificado'),
+    ttlMinutes: z.number().int().min(5).max(1440).optional()
+      .describe('Vigencia del link en minutos (default 60, máximo 1440 = 24 h)'),
   },
   async (args) => {
     try {
-      const { readFileSync } = await import('node:fs');
-      const buf = readFileSync(args.p12Path);
-      const form = new FormData();
-      form.append('file', new Blob([buf]), 'cert.p12');
-      form.append('password', args.password);
-      const apiKey = getApiKey();
-      const res = await fetch(`${base}/v1/tenants/${tenantOf(args)}/cert`, {
-        method: 'POST',
-        headers: { authorization: `Bearer ${apiKey}` },
-        body: form,
+      const r = await api('POST', `/tenants/${tenantOf(args)}/setup-link`, {
+        ...(args.ttlMinutes ? { ttlMinutes: args.ttlMinutes } : {}),
       });
-      const json = await res.json();
-      if (!res.ok) throw new Error(`FE-PY ${res.status}: ${json?.error?.message ?? JSON.stringify(json)}`);
-      return ok({ ...json, siguientePaso: 'configurar_csc con el CSC del portal eKuatia' });
-    } catch (e) {
-      return fail(e);
-    }
-  },
-);
-
-server.tool(
-  'configurar_csc',
-  'Configura el Código de Seguridad del Contribuyente (paso 3 del onboarding). El CSC sale del ' +
-    'portal eKuatia del contribuyente (32 caracteres alfanuméricos) — obligatorio para el QR; ' +
-    'sin él SIFEN rechaza toda emisión.',
-  {
-    tenant_id: tenantIdSchema,
-    cscId: z.string().min(1).max(10).describe('Id del CSC, típicamente "0001"'),
-    csc: z.string().regex(/^[A-Za-z0-9]{32}$/).describe('CSC de 32 caracteres'),
-  },
-  async (args) => {
-    try {
-      const r = await api('PUT', `/tenants/${tenantOf(args)}/csc`, { cscId: args.cscId, csc: args.csc });
-      return ok({ ...r, siguientePaso: 'configurar_numeracion si migra correlativo; si no, estado_tenant' });
+      return ok({
+        ...r,
+        siguientePaso:
+          'Cuando el contribuyente complete el formulario, verificá con estado_tenant (debe dar ready=true)',
+      });
     } catch (e) {
       return fail(e);
     }

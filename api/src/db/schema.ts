@@ -293,6 +293,35 @@ export const numeracion = pgTable(
 );
 
 // ──────────────────────────────────────────────────────────────
+// setup_links — carga segura de credenciales por el contribuyente
+//
+// El .p12, su contraseña y el CSC NUNCA deben viajar por el canal del
+// integrador (chat de un agente IA, tickets, mail). Este token de un solo
+// uso habilita un formulario donde el contribuyente los sube directo al
+// API. Se guarda HASHEADO: si se filtra la DB, los links no son usables.
+// ──────────────────────────────────────────────────────────────
+export const setupLinks = pgTable(
+  'setup_links',
+  {
+    id: uuid('id').primaryKey().$defaultFn(() => uuidv7()),
+    companyId: uuid('company_id')
+      .notNull()
+      .references(() => companies.id, { onDelete: 'cascade' }),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    tokenHash: text('token_hash').notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    usedAt: timestamp('used_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    tokenHashUnique: uniqueIndex('setup_links_token_hash_unique').on(t.tokenHash),
+    tenantIdx: index('setup_links_tenant_idx').on(t.tenantId),
+  }),
+);
+
+// ──────────────────────────────────────────────────────────────
 // eventos — cancelación, inutilización, etc.
 // ──────────────────────────────────────────────────────────────
 export const eventos = pgTable(

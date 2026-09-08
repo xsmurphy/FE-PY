@@ -63,6 +63,16 @@ const envSchema = z.object({
     .default('true')
     .transform((v) => v === 'true'),
 
+  // Token de administración para crear companies (POST /v1/companies).
+  // Si NO está seteado, el signup queda CERRADO — seguro por defecto: hoy
+  // el alta de plataformas es un trámite interno, no self-service.
+  SIGNUP_TOKEN: z.string().min(16).optional(),
+
+  // URL pública del servicio — usada para armar los links de setup que se
+  // envían al contribuyente. Sin esto se infiere del request (detrás de un
+  // proxy puede quedar mal).
+  PUBLIC_BASE_URL: z.string().url().optional(),
+
   // Playground HTML de pruebas — SOLO dev/staging. Default false: en prod
   // nadie tiene que acordarse de apagarlo.
   ENABLE_PLAYGROUND: z

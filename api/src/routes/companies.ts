@@ -4,12 +4,16 @@ import { eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { companies } from '../db/schema.js';
 import { generateApiKey } from '../lib/api-keys.js';
-import { ConflictError } from '../lib/errors.js';
+import { ConflictError, UnauthorizedError } from '../lib/errors.js';
+import { env } from '../config/env.js';
+import { timingSafeEqual } from 'node:crypto';
 import { requireAuth } from '../middleware/auth.js';
 
 export const companyRoutes: FastifyPluginAsyncZod = async (app) => {
   // ─────────────────────────────────────────────────────
-  // POST /v1/companies — signup (PÚBLICO, no auth)
+  // POST /v1/companies — alta de plataforma cliente.
+  // NO es público: exige header `x-signup-token` que debe coincidir con
+  // SIGNUP_TOKEN del entorno. Sin esa env var el endpoint está cerrado.
   // ─────────────────────────────────────────────────────
   app.post(
     '/companies',
@@ -17,6 +21,9 @@ export const companyRoutes: FastifyPluginAsyncZod = async (app) => {
       schema: {
         tags: ['companies'],
         summary: 'Registrar nueva company (plataforma cliente)',
+        headers: z.object({
+          'x-signup-token': z.string().optional(),
+        }),
         body: z.object({
           name: z.string().min(2).max(200),
           email: z.string().email(),
@@ -35,6 +42,18 @@ export const companyRoutes: FastifyPluginAsyncZod = async (app) => {
       },
     },
     async (request, reply) => {
+      // Gate de administración — comparación constant-time
+      const expected = env.SIGNUP_TOKEN;
+      const provided = request.headers['x-signup-token'];
+      if (!expected) {
+        throw new UnauthorizedError('El alta de companies está deshabilitada en este servidor');
+      }
+      const a = Buffer.from(String(provided ?? ''));
+      const b = Buffer.from(expected);
+      if (a.length !== b.length || !timingSafeEqual(a, b)) {
+        throw new UnauthorizedError('x-signup-token inválido o ausente');
+      }
+
       const { name, email, billingEmail } = request.body;
 
       // chequear email único

@@ -29,6 +29,13 @@
       "when": 1788864355586,
       "tag": "0003_cdc_unique_per_company",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1788910874742,
+      "tag": "0004_setup_links",
+      "breakpoints": true
     }
   ]
 }

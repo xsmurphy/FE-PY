@@ -1,0 +1,19 @@
+{
+  "name": "fepy-mcp",
+  "version": "0.1.0",
+  "description": "MCP server para emitir facturas electrónicas de Paraguay (SIFEN) vía FE-PY",
+  "type": "module",
+  "bin": {
+    "fepy-mcp": "./server.mjs"
+  },
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "zod": "^3.24.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

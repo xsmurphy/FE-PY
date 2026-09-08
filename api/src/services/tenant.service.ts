@@ -7,7 +7,7 @@
  */
 import { eq, and, desc } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { tenants, type Tenant, type NewTenant } from '../db/schema.js';
+import { tenants, documents, eventos, type Tenant, type NewTenant } from '../db/schema.js';
 import { ConflictError, NotFoundError } from '../lib/errors.js';
 
 export interface CreateTenantInput {
@@ -158,12 +158,45 @@ export const updateTenant = async (
 };
 
 /**
- * Soft delete: marca como suspended. No borra físicamente para preservar audit trail.
+ * Baja del tenant con dos semánticas:
+ *
+ *   - Tenant VIRGEN (cero documentos y cero eventos): purga física (los FK
+ *     con onDelete cascade se llevan cert/CSC/numeración). Necesario para
+ *     el flujo real de onboarding: un alta equivocada o abandonada debe
+ *     poder rehacerse — el RUC es único por company, y un tenant suspendido
+ *     lo dejaría bloqueado para siempre.
+ *   - Tenant con historia fiscal: soft delete (status=suspended) — el audit
+ *     trail y los documentos emitidos NO se borran jamás.
+ *
+ * Devuelve qué pasó para que la ruta lo informe.
  */
-export const suspendTenant = async (companyId: string, tenantId: string): Promise<void> => {
+export const suspendTenant = async (
+  companyId: string,
+  tenantId: string,
+): Promise<'purged' | 'suspended'> => {
   await requireTenantForCompany(companyId, tenantId);
+
+  const [doc] = await db
+    .select({ id: documents.id })
+    .from(documents)
+    .where(eq(documents.tenantId, tenantId))
+    .limit(1);
+  const [evento] = await db
+    .select({ id: eventos.id })
+    .from(eventos)
+    .where(eq(eventos.tenantId, tenantId))
+    .limit(1);
+
+  if (!doc && !evento) {
+    await db
+      .delete(tenants)
+      .where(and(eq(tenants.companyId, companyId), eq(tenants.id, tenantId)));
+    return 'purged';
+  }
+
   await db
     .update(tenants)
     .set({ status: 'suspended', updatedAt: new Date() })
     .where(and(eq(tenants.companyId, companyId), eq(tenants.id, tenantId)));
+  return 'suspended';
 };

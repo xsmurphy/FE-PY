@@ -245,7 +245,10 @@ export const tenantRoutes: FastifyPluginAsyncZod = async (app) => {
       },
     },
     async (request, reply) => {
-      await suspendTenant(request.company!.id, request.tenant!.id);
+      const outcome = await suspendTenant(request.company!.id, request.tenant!.id);
+      // purged = tenant virgen borrado físicamente (el RUC queda libre para
+      // re-alta); suspended = tenía historia fiscal, baja lógica
+      reply.header('x-tenant-delete-outcome', outcome);
       reply.status(204);
       return;
     },

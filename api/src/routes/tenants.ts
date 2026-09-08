@@ -9,7 +9,7 @@ import {
   suspendTenant,
 } from '../services/tenant.service.js';
 import { setNumeracion, listNumeracion } from '../services/numeracion.service.js';
-import { validarRuc } from '../lib/ruc.js';
+import { validarRuc, normalizarRuc } from '../lib/ruc.js';
 import { BadRequestError } from '../lib/errors.js';
 import { db } from '../db/index.js';
 import { tenantCerts, tenantCsc } from '../db/schema.js';
@@ -115,16 +115,17 @@ export const tenantRoutes: FastifyPluginAsyncZod = async (app) => {
       },
     },
     async (request, reply) => {
-      // Validación del RUC (formato + dígito verificador módulo 11) — un
-      // tenant con RUC inválido es rechazado por SIFEN recién al emitir;
-      // acá lo atajamos en el alta con error accionable.
-      const rucCheck = validarRuc(request.body.ruc);
-      if (!rucCheck.valid) {
-        throw new BadRequestError(rucCheck.error!);
+      // Normalización del RUC: sin DV se calcula y añade (módulo 11); con
+      // DV se valida. RUC inválido rebota acá con error accionable, no en
+      // la primera emisión contra SIFEN.
+      const rucNorm = normalizarRuc(request.body.ruc);
+      if (!rucNorm.ruc) {
+        throw new BadRequestError(rucNorm.error!);
       }
       const tenant = await createTenant({
         companyId: request.company!.id,
         ...request.body,
+        ruc: rucNorm.ruc,
       });
       return reply.status(201).send(serializeTenant(tenant));
     },

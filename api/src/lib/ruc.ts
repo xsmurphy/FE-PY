@@ -21,6 +21,27 @@ export interface RucValidation {
   error?: string;
 }
 
+export interface RucNormalization {
+  ruc?: string;
+  error?: string;
+}
+
+/**
+ * Normaliza un RUC de entrada:
+ *   - "3595193"   → "3595193-1" (calcula y añade el DV)
+ *   - "3595193-1" → "3595193-1" (valida el DV; error si no coincide)
+ *   - inválido    → error accionable
+ */
+export const normalizarRuc = (input: string): RucNormalization => {
+  const raw = input.trim();
+  if (/^\d{1,8}$/.test(raw)) {
+    return { ruc: `${raw}-${calcularDvRuc(raw)}` };
+  }
+  const check = validarRuc(raw);
+  if (!check.valid) return { error: check.error };
+  return { ruc: raw };
+};
+
 /** Valida formato "1234567-1" y que el DV sea el correcto. */
 export const validarRuc = (ruc: string): RucValidation => {
   const match = /^(\d{1,8})-(\d)$/.exec(ruc.trim());

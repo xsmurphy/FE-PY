@@ -4,7 +4,7 @@ import { and, eq, desc } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { eventos } from '../db/schema.js';
 import { requireAuth } from '../middleware/auth.js';
-import { requireTenantScope } from '../middleware/tenant-scope.js';
+import { requireTenantScope, requireActiveTenant } from '../middleware/tenant-scope.js';
 import { idempotencyCheck, idempotencyPersist } from '../middleware/idempotency.js';
 import { cancelarDocumento, inutilizarRango } from '../services/evento.service.js';
 
@@ -48,7 +48,7 @@ export const eventoRoutes: FastifyPluginAsyncZod = async (app) => {
   app.post(
     '/tenants/:tenant_id/eventos/cancelacion',
     {
-      preHandler: [requireAuth, requireTenantScope, idempotencyCheck],
+      preHandler: [requireAuth, requireTenantScope, requireActiveTenant, idempotencyCheck],
       onSend: [idempotencyPersist],
       schema: {
         tags: ['eventos'],
@@ -104,7 +104,7 @@ export const eventoRoutes: FastifyPluginAsyncZod = async (app) => {
   app.post(
     '/tenants/:tenant_id/eventos/inutilizacion',
     {
-      preHandler: [requireAuth, requireTenantScope, idempotencyCheck],
+      preHandler: [requireAuth, requireTenantScope, requireActiveTenant, idempotencyCheck],
       onSend: [idempotencyPersist],
       schema: {
         tags: ['eventos'],

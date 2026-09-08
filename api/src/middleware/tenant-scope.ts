@@ -10,7 +10,7 @@
  */
 import type { FastifyRequest, preHandlerHookHandler } from 'fastify';
 import { findTenantByIdForCompany } from '../services/tenant.service.js';
-import { NotFoundError, UnauthorizedError } from '../lib/errors.js';
+import { NotFoundError, UnauthorizedError, ConflictError } from '../lib/errors.js';
 import type { Tenant } from '../db/schema.js';
 
 declare module 'fastify' {
@@ -42,4 +42,22 @@ export const requireTenantScope: preHandlerHookHandler = async (request: Fastify
   }
 
   request.tenant = tenant;
+};
+
+/**
+ * Bloquea operaciones de EMISIÓN sobre tenants dados de baja (suspended).
+ * Va DESPUÉS de requireTenantScope en las rutas que crean documentos o
+ * eventos fiscales. Las lecturas (historial, descargas de XML/KUDE) y la
+ * configuración (cert, CSC, PATCH) siguen permitidas — la baja corta la
+ * emisión, no el acceso a lo ya emitido. Reactivación: PATCH status=active.
+ */
+export const requireActiveTenant: preHandlerHookHandler = async (request: FastifyRequest) => {
+  if (!request.tenant) {
+    throw new NotFoundError('Tenant');
+  }
+  if (request.tenant.status !== 'active') {
+    throw new ConflictError(
+      `El tenant está dado de baja (status=${request.tenant.status}) — no puede emitir documentos ni eventos. Reactivar con PATCH status=active.`,
+    );
+  }
 };

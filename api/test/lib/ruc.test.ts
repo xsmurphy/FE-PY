@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { calcularDvRuc, validarRuc } from '../../src/lib/ruc.js';
+import { calcularDvRuc, validarRuc, normalizarRuc } from '../../src/lib/ruc.js';
 
 describe('RUC paraguayo — dígito verificador módulo 11', () => {
   // RUCs REALES verificados contra el padrón (2026-09-07/08)
@@ -26,5 +26,17 @@ describe('RUC paraguayo — dígito verificador módulo 11', () => {
     expect(validarRuc('3595193-12').valid).toBe(false); // DV de 2 dígitos
     expect(validarRuc('abc-1').valid).toBe(false);
     expect(validarRuc('').valid).toBe(false);
+  });
+
+  it('normaliza: sin DV lo calcula y añade', () => {
+    expect(normalizarRuc('3595193')).toEqual({ ruc: '3595193-1' });
+    expect(normalizarRuc('7659394')).toEqual({ ruc: '7659394-0' });
+    expect(normalizarRuc(' 80069563 ')).toEqual({ ruc: '80069563-1' });
+  });
+
+  it('normaliza: con DV correcto lo deja, con DV incorrecto rebota', () => {
+    expect(normalizarRuc('3595193-1')).toEqual({ ruc: '3595193-1' });
+    expect(normalizarRuc('3595193-7').error).toContain('el DV de 3595193 es 1');
+    expect(normalizarRuc('abc').error).toBeDefined();
   });
 });

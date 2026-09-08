@@ -9,7 +9,7 @@ import { and, eq, desc } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { documents, tenantCerts } from '../db/schema.js';
 import { requireAuth } from '../middleware/auth.js';
-import { requireTenantScope } from '../middleware/tenant-scope.js';
+import { requireTenantScope, requireActiveTenant } from '../middleware/tenant-scope.js';
 import {
   extractSifenCodigo,
   extractSifenMensaje,
@@ -165,7 +165,7 @@ export const documentRoutes: FastifyPluginAsyncZod = async (app) => {
   app.post(
     '/tenants/:tenant_id/de',
     {
-      preHandler: [requireAuth, requireTenantScope, idempotencyCheck],
+      preHandler: [requireAuth, requireTenantScope, requireActiveTenant, idempotencyCheck],
       onSend: [idempotencyPersist],
       schema: {
         tags: ['documents'],

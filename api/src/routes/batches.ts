@@ -22,7 +22,7 @@ import { and, eq, like, desc } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { documents } from '../db/schema.js';
 import { requireAuth } from '../middleware/auth.js';
-import { requireTenantScope } from '../middleware/tenant-scope.js';
+import { requireTenantScope, requireActiveTenant } from '../middleware/tenant-scope.js';
 import { sifenBatchQueue } from '../queue/queues.js';
 
 const batchStatusSchema = z.object({
@@ -52,7 +52,7 @@ export const batchRoutes: FastifyPluginAsyncZod = async (app) => {
   app.post(
     '/tenants/:tenant_id/de/batch',
     {
-      preHandler: [requireAuth, requireTenantScope],
+      preHandler: [requireAuth, requireTenantScope, requireActiveTenant],
       schema: {
         tags: ['batches'],
         summary: 'Enviar un lote de documentos para emisión asíncrona',

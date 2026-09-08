@@ -131,8 +131,17 @@ Headers: `authorization: Bearer <key>`, `content-type: application/json`,
 ```
 
 Notas del shape:
-- `numero` NO se manda — lo asigna la numeración interna del API (secuencia
-  por tenant/tipo/establecimiento/punto, `SELECT FOR UPDATE`).
+- **`numero` — dos modos** (commit `2958042`): si NO se manda, lo asigna la
+  numeración interna del API (secuencia por tenant/tipo/est/punto con
+  `SELECT FOR UPDATE`); si SE manda (entero 1-9999999), manda el ERP y la
+  secuencia interna se sincroniza hacia arriba (mezclar modos no colisiona).
+  Número ya activo en ese scope → 409; números de docs rechazados/error son
+  reutilizables (índice único parcial).
+- **Correlativo inicial por API** (onboarding de clientes que migran):
+  `PUT /v1/tenants/:id/numeracion` con `{tipoDocumento, establecimiento,
+  punto, ultimoNumero}` (próxima emisión = +1; 409 si retrocede por debajo
+  del mayor número activo). `GET /v1/tenants/:id/numeracion` lista las
+  secuencias con `proximoNumero`. Chau SQL manual.
 - `fecha` opcional; si se omite el API pone hora paraguaya correcta. Si la
   mandás: `YYYY-MM-DDTHH:mm:ss` **en hora America/Asuncion, sin sufijo Z**.
 - Cliente contribuyente real: `contribuyente: true` + `ruc` con DV +

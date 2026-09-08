@@ -27,7 +27,10 @@ FROM node:20-alpine AS parent-builder
 WORKDIR /build
 COPY package.json package-lock.json tsconfig.json tslint.json ./
 COPY src ./src
-RUN npm ci --ignore-scripts
+# --include=dev: los builders SIEMPRE necesitan devDeps (typescript) aunque
+# el entorno de build inyecte NODE_ENV=production (Coolify lo hace y sin esto
+# `tsc` no existe — deploy fallido 2026-09-08)
+RUN npm ci --ignore-scripts --include=dev
 RUN npx tsc || npm run build
 
 # ============================================================================
@@ -60,7 +63,7 @@ fs.writeFileSync(p, JSON.stringify(pkg,null,2));"
 # Build del API en /app/api
 WORKDIR /app/api
 COPY api/package.json api/tsconfig.json ./
-RUN npm install --ignore-scripts
+RUN npm install --ignore-scripts --include=dev
 
 COPY api/src ./src
 RUN npm run build

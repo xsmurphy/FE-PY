@@ -148,7 +148,7 @@ real, KUDE PDF, cancelación (evento 0600), NC, consulta WS (`0422`). Ver
 | ND / Autofactura / remisión | No ejercitado esta sesión |
 | Batch async (BullMQ) + retry worker | Worker no corre en el compose local (profile "workers" apagado) |
 | Receptor con CI sin RUC | No ejercitado esta sesión |
-| Deploy en Coolify / server Punto | Pendiente, ver Blockers |
+| Emisión real desde prod (fepy.punto.la) | Bloqueada por `timbradoFecha` mal cargada, ver Blockers |
 
 ---
 
@@ -460,23 +460,22 @@ Ver [api/.env.example](api/.env.example) para el archivo completo.
 
 ### 🔴 Blockers (sin esto no se deploya)
 
-Resuelto 2026-09-07: cert `.p12` + CSC reales conseguidos, emisión real
-contra SIFEN producción lograda (recibeLote/consultaLote — el `recibe`
-síncrono está restringido en prod, devuelve 1264 aunque el RUC esté
-habilitado), códigos SIFEN calibrados en vivo, KUDE probado (falta rebuild
-del container para activar el fix commiteado). Queda:
+Resuelto 2026-09-08: **API deployada y en producción en
+[https://fepy.punto.la](https://fepy.punto.la)** — Coolify en el server de
+Punto (167.71.165.221), Postgres+Redis propios en el mismo Coolify, TLS/
+health/DB ok, `/playground` gated (404), provisioning prod ejecutado
+(tenant Balloon Party, cert, CSC, numeración FE=614/NC=2). Auto-deploy por
+push desactivado; deploys manuales. Detalle completo en `.claude/_handoff.md`.
+Queda:
 
-- [ ] **Rebuild del container** para activar fix KUDE (`448c885`):
-  `docker compose -f api/docker-compose.yml up --build -d api`
-- [ ] **Droplet/server con Coolify** — server de Punto (167.71.165.221) acordado como destino
-- [ ] **Postgres managed** en DO o contenedor en Coolify
-- [ ] **Redis + MinIO/Spaces** en Coolify
-- [ ] **`MASTER_KEY_BASE64` prod nueva + backup offline triple** (la de dev vive solo en `api/.env` local, no sirve para prod)
-- [ ] **Dominio** apuntado al server
-- [ ] **Primer deploy staging** antes de prod, con re-provisioning completo (company + tenant + cert + CSC + numeración)
-- [ ] **Gating del `/playground`** detrás de `ENABLE_PLAYGROUND=false` para prod
-- [ ] **409 legible + soporte de re-emisión** cuando un documento rechazado deja fila muerta en `documents` (UNIQUE tenant+numero)
-- [ ] **Coordinación de punto de expedición** con la sesión Punto: propuesta Factomate=001-001 / FE-PY=001-002 pendiente de confirmación del owner
+- [ ] **🔴 BLOCKER: `timbradoFecha` del tenant prod mal cargada** (2026-02-06,
+  la real es 2025-08-26) — toda emisión rebota 1107 hasta corregirla, ver
+  `.claude/_handoff.md` → Próximo paso
+- [ ] **Worker BullMQ en Coolify** (duplicar app, start command `worker`) — sin él no hay retries ni batch async
+- [ ] **Hand-off de credenciales a Punto** (`fepy-handoff.json`) para el flip de `FePyProvider`
+- [ ] **Emisión de prueba desde prod** para validar el pipeline en el server
+- [ ] **`MASTER_KEY_BASE64` prod** ya generada y cargada en Coolify — falta backup offline triple (quedó impresa en el terminal del owner, limpiar historial)
+- [ ] **Droplet propio DO** — bloqueado por saldo pendiente en la cuenta del owner; hoy corre en el server de Punto como hosting temporal
 
 ### 🟡 Mejoras recomendadas antes del primer cliente
 

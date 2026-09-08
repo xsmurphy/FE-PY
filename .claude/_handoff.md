@@ -1,51 +1,92 @@
-# Hand-off — 2026-09-07
+# Hand-off — 2026-09-08 (madrugada)
 
 ## Objetivo
-Primera validación end-to-end del motor FE-PY contra **SIFEN producción**
-(no test) con certificado real de un cliente real, para confirmar que el
-pipeline completo (firma → envío → aprobación → consulta → KUDE → eventos)
-funciona antes de ofrecerlo a Punto/Factomate como reemplazo del emisor
-actual del cliente.
+Pasar el motor FE-PY (ya validado E2E contra SIFEN producción el 2026-09-07)
+de "corriendo en Docker local del laptop del owner" a un deploy real en
+internet, para poder ofrecerlo a Punto/Factomate como reemplazo del emisor
+actual de Balloon Party.
 
 ## Estado al cerrar
-Emisión real lograda y verificada contra SIFEN prod: factura 001-002-0000612
-(aprobada 0260, luego anulada por evento 0600), 613 (consumidor final,
-aprobada), 614 (B2B, aprobada, protocolo `3549281396`), NC 001-002-0000002
-contra la 614 (aprobada, protocolo `3549281825`). Consulta WS calibrada
-(0422 = CDC encontrado). KUDE genera PDF OK **verificado a mano dentro del
-container**, pero el fix (commit `448c885`) **no está activo** — falta
-rebuild de la imagen. Todo esto está commiteado (`65351e4..fc6161b`) pero
-**nada está pusheado ni deployado**; sigue corriendo en Docker local del
-laptop del owner.
+**API en producción y funcionando: https://fepy.punto.la** — deployada en
+Coolify sobre el server de Punto (167.71.165.221, proyecto Punto, app
+"Factura Electrónica", uuid `5oj0o6wz7nmwkpez0ffeupej`). TLS ok, health+DB
+ok, `/playground` da 404 (gated), `/docs` público. DBs propias en el mismo
+Coolify: `fepy-db` (Postgres 16) + `fepy-redis`. Storage: DO Spaces del
+owner (env `S3_*` cargadas). Auto-deploy por push está **desactivado** a
+pedido del owner — todo deploy es manual (yo puedo dispararlo vía MCP
+`coolify deploy`).
+
+Provisioning prod ya ejecutado por el owner: company
+`01a07f03-7119-7169-ac27-f14b6084e0d2`, tenant Balloon Party
+`01a07f03-7335-7739-9869-296d3607797d` (env=prod), cert cargado (vence
+2027-02-02), CSC `0001`, numeración FE=614/NC=2 (próximos 615/3).
+
+Todo commiteado y **pusheado** a `github.com/xsmurphy/FE-PY` main
+(`2958042..bd617d1`). Tests 54/54 verdes.
+
+**No deployado ni resuelto todavía**: worker BullMQ (retries/batch async no
+corren en prod), servicio de emisión de prueba desde prod, hand-off de
+credenciales a la sesión Punto.
 
 ## Archivos y cambios
-- `api/src/services/de.service.ts` — pipeline por recibeLote/consultaLote (69d1d76), fix timezone firma (cb2afbb)
-- `api/src/services/kude.service.ts` — toma el `.pdf` real del tmpdir en vez de asumir `<CDC>.pdf` (448c885), loguea motivo de fallo (c03b1db)
-- `api/Dockerfile` — JRE completo + fontconfig/libfontmanager para JasperReports (3eec404)
-- `PUNTO_INTEGRATION.md` — contrato de endpoints para la sesión Punto (adapter FePyProvider), ya al día, no tocar
-- `NEXT_STEPS.md` — actualizado esta sesión (ver docs abajo)
-- `api/.env` (NO commiteado, gitignored) — `ENABLE_SIFEN=true`, `ENABLE_KUDE=true`, `MASTER_KEY` dev
+- `api/src/routes/tenants.ts` — `PUT/GET /v1/tenants/:id/numeracion` (correlativo con guard 409), numeración dual (body.numero explícito del ERP sincroniza con GREATEST)
+- `api/src/db/migrations/0002_*.sql` — índice único PARCIAL en `documents` (rechazado/error no bloquean número)
+- `api/src/routes/playground.ts` — gated detrás de `ENABLE_PLAYGROUND` (default false)
+- `api/Dockerfile` — `--include=dev` en builders (Coolify inyecta `NODE_ENV=production` al build)
+- healthcheck de la imagen — `curl 127.0.0.1` en vez de `wget localhost`
+- `PUNTO_INTEGRATION.md` — doc de contrato Punto, modos de numeración
+- `NEXT_STEPS.md` — actualizado esta sesión (hosting prod + blockers)
 
 ## Callejones sin salida
-1. Servicio síncrono `recibe` de SIFEN está **restringido en producción**: devuelve 1264 "RUC no habilitado" aunque el RUC sí esté habilitado — no es problema de habilitación, el canal real es recibeLote+consultaLote.
-2. Rechazo 1004 "firma adelantada" = container en UTC, SIFEN interpreta todo en America/Asuncion — no es reloj desincronizado.
-3. Rechazo 1107 = timbradoFecha no coincide con Marangatú. El dato "de memoria" del owner (2026-02-06) era falso; el real (2025-08-26) salió de un KUDE del sistema anterior. **Nunca estimar timbradoFecha.**
-4. Rechazo 1331: NC contra factura a consumidor final innominado — SIFEN exige receptor identificado (CI/RUC) en toda NC. Implicación de producto para el POS.
-5. KUDE fallaba por dos capas simultáneas (JRE sin libfontmanager + nombre de archivo del JAR distinto al asumido) — un solo fix no alcanzaba, había que resolver ambas.
-6. `dProtConsLote` tiene 19 dígitos, > `Number.MAX_SAFE_INTEGER` — manejar siempre como string.
-7. Documento rechazado deja fila en `documents` con el número consumido; el UNIQUE(tenant, numero) rompe el reintento con 500 — hoy se borra la fila a mano por SQL.
+1. Dockerfile location mal configurada en Coolify (`/Dockerfile` en vez de
+   `/api/Dockerfile`) — build context sigue siendo `/`.
+2. Coolify inyecta `NODE_ENV=production` en el build, no solo en runtime →
+   `npm install` omite devDependencies → `tsc: not found`. Fix:
+   `--include=dev` explícito en el Dockerfile.
+3. Healthcheck con `wget localhost` — Alpine resuelve `::1` (IPv6) primero,
+   Fastify solo escucha IPv4 → `connection refused` con el server sano.
+   Coolify SÍ gatea el deploy con el docker health status (local nunca lo
+   miró, por eso "andaba en local"). Fix: `curl 127.0.0.1`.
+4. Cancelar un deploy duplicado (webhook + API disparados sobre el mismo
+   commit) mató también el build bueno — no cancelar deploys concurrentes
+   del mismo commit en Coolify, esperar a que uno termine.
+5. Intento de crear droplet propio DO "fe-py" (s-2vcpu-4gb nyc3): bloqueado
+   por saldo pendiente en la cuenta DigitalOcean del owner — por eso se usó
+   el server de Punto como hosting temporal en vez de infra propia.
 
 ## Próximo paso
-`docker compose -f api/docker-compose.yml up --build -d api` para activar el
-fix de KUDE (448c885) — hoy solo está verificado a mano dentro del
-container viejo, no en el flujo real del servicio.
+**Corregir `timbradoFecha` del tenant prod** — está cargada como
+`2026-02-06` (mal) y la real es `2025-08-26`; hasta que se corrija, toda
+emisión rebota con SIFEN 1107. Ejecutar:
+
+```
+export FEPY_URL=https://fepy.punto.la FEPY_STATE=prod
+node provision.js timbrado-fecha 2025-08-26
+```
+
+(script en el scratchpad de la sesión anterior, puede no existir mañana).
+Si no está: `PATCH /v1/tenants/01a07f03-7335-7739-9869-296d3607797d` con
+body `{"timbradoFecha":"2025-08-26"}` y el API key de `company.prod.json`.
+
+Después, en orden: hand-off de credenciales a Punto (scp de
+`fepy-handoff.json`, comando ya en el chat con el owner) → crear servicio
+WORKER en Coolify (duplicar app, start command `worker`) → avisar a la
+sesión Punto (`local_5c09615b-2531-438e-b575-857b0ceea283`) para el flip →
+emisión de prueba desde prod (`provision.js emitir`) → cuando el owner
+salde DigitalOcean, migrar a droplet propio.
 
 ## Trampas conocidas
-- Numeración sembrada a mano por SQL en la DB local; próximo correlativo FE real es **615**, NC **3**.
-- Fila `documents` de la 612 se corrigió a mano por SQL (estado aprobado + protocolo) antes de cancelarla — no viene de un flujo normal.
-- Worker BullMQ **no corre** en el compose local (profile "workers" apagado) — retry y batch async no procesan hoy.
-- API corre en `localhost:3001` (3000 ocupado por otro dev server del owner) — no asumir el puerto default.
-- Punto configuró Factomate DEV con punto 001-002, que colisiona con el 001-002 exclusivo de FE-PY — propuesta acordada (Factomate=001-001, FE-PY=001-002) **pendiente de confirmación del owner**.
-- Portal público ekuatia tiene captcha (no verificable por agente); el WS de consulta no lo tiene — usar el WS para chequeos automatizados.
-- razonSocial debe ser la del padrón RUC ("GONZALEZ QUEVEDO, CINTIA ESTEFANIA"), no el nombre comercial del cliente.
-- Pendiente de deploy: Coolify en server Punto (167.71.165.221), MASTER_KEY prod nueva + backup, gating `/playground`, re-provisioning completo en server — nada de esto se tocó esta sesión.
+- El scratchpad de la sesión anterior
+  (`/private/tmp/claude-501/.../scratchpad/`) tiene `company.prod.json`
+  (API KEY de prod) y `provision.js` — es temporal, **mover el API key a
+  un lugar seguro antes de perderlo**; si se pierde se rota con
+  `POST /companies/me/keys/rotate` (requiere el key actual).
+- La `MASTER_KEY` de prod quedó impresa en el terminal del owner (generada
+  a mano) — recomendar limpiar historial; ya está cargada en Coolify.
+- `S3_KEY_PREFIX` en las env de Coolify no existe en el API, se ignora.
+- El clasificador de permisos bloquea al agente para SSH al server,
+  comandos con secretos e INSERT/UPDATE SQL directo — el owner los corre a
+  mano.
+- Sesión Punto está esperando green light para el flip de FePyProvider —
+  no avisar hasta que el timbradoFecha y el hand-off de credenciales estén
+  resueltos.

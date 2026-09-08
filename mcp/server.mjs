@@ -31,6 +31,8 @@ import { z } from 'zod';
 const BASE = process.env.FEPY_URL?.replace(/\/$/, '');
 const ENV_API_KEY = process.env.FEPY_API_KEY;
 const DEFAULT_TENANT = process.env.FEPY_TENANT_ID;
+const DEFAULT_EST = process.env.FEPY_ESTABLECIMIENTO;
+const DEFAULT_PUNTO = process.env.FEPY_PUNTO;
 const HTTP_PORT = process.env.MCP_HTTP_PORT ? Number(process.env.MCP_HTTP_PORT) : null;
 
 if (!BASE) {
@@ -180,6 +182,42 @@ const buildItems = (items) =>
     iva: i.iva,
   }));
 
+const fmtGs = (n) => new Intl.NumberFormat('es-PY').format(n);
+
+const estPunto = (args) => {
+  const establecimiento = args.establecimiento ?? DEFAULT_EST;
+  const punto = args.punto ?? DEFAULT_PUNTO;
+  if (!establecimiento || !punto) {
+    throw new Error('Faltan establecimiento/punto (o configurá FEPY_ESTABLECIMIENTO y FEPY_PUNTO)');
+  }
+  return { establecimiento, punto };
+};
+
+/** Resuelve el receptor contra el padrón cuando hay RUC. */
+const resolverReceptor = async (tenantId, cliente) => {
+  if (cliente?.ruc) {
+    const r = await api('GET', `/tenants/${tenantId}/consulta/ruc/${cliente.ruc.split('-')[0]}`);
+    // la respuesta cruda de SIFEN trae la razón social — buscarla en el árbol
+    const raw = JSON.stringify(r);
+    const nombre = /"(?:x?dRazCons|razonSocial|name)"\s*:\s*"([^"]+)"/.exec(raw)?.[1];
+    return {
+      tipo: 'RUC',
+      documento: cliente.ruc,
+      nombre: nombre ?? cliente.razonSocial ?? '(no se pudo resolver del padrón — pedir al usuario)',
+      cliente: { ruc: cliente.ruc, razonSocial: nombre ?? cliente.razonSocial },
+    };
+  }
+  if (cliente?.ci) {
+    return {
+      tipo: 'CI',
+      documento: cliente.ci,
+      nombre: cliente.razonSocial ?? '(falta el nombre — pedirlo al usuario)',
+      cliente: { ci: cliente.ci, razonSocial: cliente.razonSocial },
+    };
+  }
+  return { tipo: 'Consumidor final', documento: '-', nombre: 'Sin Nombre', cliente: undefined };
+};
+
 const resumen = (r) => ({
   cdc: r.cdc,
   estado: r.estado,
@@ -199,18 +237,16 @@ const server = new McpServer(
   {
     instructions: `Facturación electrónica legal de Paraguay (SIFEN) vía FE-PY.
 
-FLUJO PARA EMITIR UN COMPROBANTE (seguir en orden):
-1. Verificá el tenant con estado_tenant — si ready=false, mostrá al usuario qué falta (cert, CSC, numeración) y NO emitas.
-2. Identificá al receptor:
-   - Consumidor final sin identificar → omití "cliente" (sale "Sin Nombre"). OJO: una factura innominada NO puede recibir nota de crédito después.
-   - Cliente con RUC → verificá primero con consultar_ruc y usá la razón social EXACTA del padrón que devuelve (SIFEN valida contra el padrón).
-   - Cliente con cédula → cliente.ci + cliente.razonSocial (nombre completo).
-3. CONFIRMÁ con el usuario antes de emitir: ítems, cantidades, precios (IVA incluido), total, receptor y punto de expedición. La emisión genera un documento fiscal REAL con validez tributaria — no es reversible salvo por cancelación (48h) o nota de crédito.
-4. Emití con emitir_factura. Interpretá el resultado:
-   - estado "aprobado" → documento legal emitido; informá CDC, número y kudeUrl (PDF para el cliente).
-   - estado "rechazado" → NO se emitió nada (sin efecto fiscal); mostrá sifen.mensaje, corregí y reintentá.
-   - estado "pendiente" → SIFEN aún procesa; re-consultá con consultar_documento en ~1 min.
-5. Devoluciones/correcciones sobre una factura aprobada → emitir_nota_credito con el CDC asociado y el MISMO receptor (identificado). Anulación total dentro de las 48h → cancelar_documento.
+FLUJO OBLIGATORIO PARA EMITIR (ejemplo: el usuario dice "hacé factura al RUC 7659394-0 por 500000 concepto: Hs de desarrollo web"):
+1. Armá los ítems desde el pedido (descripcion="Hs de desarrollo web", cantidad=1, precioUnitario=500000, iva=10 salvo que digan otra cosa).
+2. Llamá previsualizar_factura — resuelve la razón social real del padrón y calcula el total. Si devuelve "(no se pudo resolver...)" o "(falta el nombre...)", pedile el dato al usuario antes de seguir.
+3. Mostrá al usuario el bloque "Vista Previa" TAL CUAL lo devuelve la tool y esperá su confirmación explícita ("sí", "confirmo", "dale"). PROHIBIDO llamar emitir_factura sin esa confirmación en la conversación.
+4. Confirmado → emitir_factura con los argumentosParaEmitir exactos de la previsualización. Resultado:
+   - "aprobado" → la respuesta incluye el KUDE en PDF: entregáselo al usuario, junto con CDC y número.
+   - "rechazado" → NO se emitió nada (sin efecto fiscal); mostrá sifen.mensaje, corregí y volvé al paso 2.
+   - "pendiente" → SIFEN aún procesa; re-consultá con consultar_documento en ~1 min.
+5. Devoluciones/correcciones sobre una factura aprobada → emitir_nota_credito (mismo receptor, identificado — una factura innominada no acepta NC). Anulación total dentro de las 48h → cancelar_documento (también requiere confirmación explícita del usuario).
+6. Si algo falla al arrancar, diagnosticá con estado_tenant (cert/CSC/numeración).
 
 REGLAS:
 - Nunca inventes RUC, razón social ni precios: pedilos al usuario o verificalos con consultar_ruc.
@@ -220,15 +256,68 @@ REGLAS:
 );
 
 server.tool(
-  'emitir_factura',
-  'Emite una FACTURA ELECTRÓNICA legal en SIFEN (Paraguay) a través de FE-PY. ' +
-    'ATENCIÓN: en un tenant de producción esto genera un documento fiscal REAL con validez tributaria — ' +
-    'confirmar SIEMPRE con el usuario monto, ítems y cliente antes de llamar. ' +
-    'Devuelve CDC, estado (aprobado/rechazado con motivo de SIFEN) y links a XML/KUDE.',
+  'previsualizar_factura',
+  'PASO OBLIGATORIO antes de emitir: arma la vista previa de la factura resolviendo el receptor ' +
+    'contra el padrón de SIFEN (si hay RUC) y calculando totales. Mostrá el bloque "Vista Previa" ' +
+    'devuelto TAL CUAL al usuario y preguntale "¿Confirmás emitir la factura?". Solo si el usuario ' +
+    'confirma explícitamente, llamá emitir_factura con los MISMOS argumentos.',
   {
     tenant_id: tenantIdSchema,
-    establecimiento: z.string().regex(/^\d{1,3}$/).describe('Establecimiento, ej "001"'),
-    punto: z.string().regex(/^\d{1,3}$/).describe('Punto de expedición, ej "002"'),
+    establecimiento: z.string().regex(/^\d{1,3}$/).optional().describe('Default: env FEPY_ESTABLECIMIENTO'),
+    punto: z.string().regex(/^\d{1,3}$/).optional().describe('Default: env FEPY_PUNTO'),
+    items: z.array(itemSchema).min(1),
+    cliente: clienteSchema,
+    condicionVenta: z.enum(['contado', 'credito']).default('contado'),
+  },
+  async (args) => {
+    try {
+      const tenantId = tenantOf(args);
+      const { establecimiento, punto } = estPunto(args);
+      const receptor = await resolverReceptor(tenantId, args.cliente);
+      const total = args.items.reduce((s, i) => s + i.cantidad * i.precioUnitario, 0);
+      const lineas = args.items
+        .map((i, n) => `Concepto: ${n + 1} - ${i.descripcion} x${i.cantidad} a ${fmtGs(i.precioUnitario)} gs.`)
+        .join('\n');
+      const preview = [
+        'Vista Previa',
+        '-------------------------',
+        `${receptor.tipo}: ${receptor.documento}`,
+        `Cliente: ${receptor.nombre}`,
+        lineas,
+        `Punto de emisión: ${establecimiento}-${punto} — Condición: ${args.condicionVenta}`,
+        '-------------------------',
+        `Total: ${fmtGs(total)} gs. (IVA incluido)`,
+        '',
+        '¿Confirmás emitir la factura?',
+      ].join('\n');
+      return ok({
+        preview,
+        // argumentos EXACTOS para emitir_factura tras la confirmación
+        argumentosParaEmitir: {
+          tenant_id: args.tenant_id,
+          establecimiento,
+          punto,
+          items: args.items,
+          cliente: receptor.cliente,
+          condicionVenta: args.condicionVenta,
+        },
+      });
+    } catch (e) {
+      return fail(e);
+    }
+  },
+);
+
+server.tool(
+  'emitir_factura',
+  'Emite una FACTURA ELECTRÓNICA legal en SIFEN (Paraguay). Llamar SOLO después de que ' +
+    'previsualizar_factura fue mostrada al usuario y el usuario CONFIRMÓ explícitamente — ' +
+    'usar los argumentosParaEmitir que devolvió la previsualización. Genera un documento fiscal ' +
+    'REAL. Si el estado es "aprobado", devuelve además el KUDE (PDF) para entregar al cliente.',
+  {
+    tenant_id: tenantIdSchema,
+    establecimiento: z.string().regex(/^\d{1,3}$/).optional().describe('Default: env FEPY_ESTABLECIMIENTO'),
+    punto: z.string().regex(/^\d{1,3}$/).optional().describe('Default: env FEPY_PUNTO'),
     items: z.array(itemSchema).min(1),
     cliente: clienteSchema,
     condicionVenta: z.enum(['contado', 'credito']).default('contado'),
@@ -238,11 +327,12 @@ server.tool(
   },
   async (args) => {
     try {
+      const { establecimiento, punto } = estPunto(args);
       const total = args.items.reduce((s, i) => s + i.cantidad * i.precioUnitario, 0);
       const body = {
         tipoDocumento: 1,
-        establecimiento: args.establecimiento,
-        punto: args.punto,
+        establecimiento,
+        punto,
         ...(args.numero != null ? { numero: String(args.numero) } : {}),
         tipoEmision: 1,
         tipoTransaccion: 1,
@@ -257,7 +347,27 @@ server.tool(
         items: buildItems(args.items),
       };
       const r = await api('POST', `/tenants/${tenantOf(args)}/de`, body);
-      return ok(resumen(r));
+      const content = [{ type: 'text', text: JSON.stringify(resumen(r), null, 2) }];
+      // KUDE embebido al aprobar — el agente lo entrega al usuario como PDF
+      if (r.estado === 'aprobado' && r.kudeUrl) {
+        try {
+          const pdf = await fetch(r.kudeUrl);
+          if (pdf.ok) {
+            const blob = Buffer.from(await pdf.arrayBuffer()).toString('base64');
+            content.push({
+              type: 'resource',
+              resource: {
+                uri: `fepy://kude/${r.cdc}.pdf`,
+                mimeType: 'application/pdf',
+                blob,
+              },
+            });
+          }
+        } catch {
+          // el link kudeUrl del resumen sigue disponible
+        }
+      }
+      return { content };
     } catch (e) {
       return fail(e);
     }

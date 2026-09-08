@@ -71,6 +71,15 @@ const itemSchema = z.object({
   iva: z.union([z.literal(0), z.literal(5), z.literal(10)]).default(10).describe('Tasa de IVA: 0 (exenta), 5 o 10'),
 });
 
+const creditoSchema = z
+  .object({
+    plazo: z.string().min(2).max(15).optional().describe('Plazo del crédito, ej "30 días" (2-15 caracteres). Default "30 días" si no hay cuotas.'),
+    cuotas: z.number().int().min(2).max(120).optional().describe('Cantidad de cuotas. Si se informa, la venta va a crédito EN CUOTAS.'),
+    montoEntrega: z.number().nonnegative().optional().describe('Entrega inicial/anticipo, si hubo'),
+  })
+  .optional()
+  .describe('Detalle del crédito. Solo aplica con condicionVenta="credito".');
+
 const clienteSchema = z
   .object({
     ruc: z.string().optional().describe('RUC del cliente contribuyente (con o sin DV, ej "7659394-0"). Si se da, la factura sale B2B.'),
@@ -213,6 +222,47 @@ const resolverReceptor = async (tenantId, cliente) => {
     };
   }
   return { tipo: 'Consumidor final', documento: '-', nombre: 'Sin Nombre', cliente: undefined };
+};
+
+/**
+ * Construye el bloque `condicion` que exige el motor:
+ *   contado          → tipo 1 + entregas[]
+ *   crédito a plazo  → tipo 2 + credito.tipo 1 + plazo (2-15 chars)
+ *   crédito en cuotas→ tipo 2 + credito.tipo 2 + cuotas + infoCuotas[]
+ */
+const buildCondicion = (condicionVenta, total, moneda, credito) => {
+  if (condicionVenta === 'contado') {
+    return { tipo: 1, entregas: [{ tipo: 1, monto: String(total), moneda, cambio: 0 }] };
+  }
+  const entrega = credito?.montoEntrega ?? 0;
+  const financiado = Math.max(total - entrega, 0);
+
+  if (credito?.cuotas && credito.cuotas >= 2) {
+    const n = credito.cuotas;
+    const base = Math.floor(financiado / n);
+    const infoCuotas = Array.from({ length: n }, (_, i) => {
+      const venc = new Date();
+      venc.setMonth(venc.getMonth() + i + 1);
+      return {
+        moneda,
+        // la última cuota absorbe el redondeo para cuadrar el total exacto
+        monto: i === n - 1 ? financiado - base * (n - 1) : base,
+        vencimiento: venc.toISOString().slice(0, 10),
+      };
+    });
+    return {
+      tipo: 2,
+      credito: { tipo: 2, cuotas: n, ...(entrega ? { montoEntrega: entrega } : {}), infoCuotas },
+    };
+  }
+  return {
+    tipo: 2,
+    credito: {
+      tipo: 1,
+      plazo: credito?.plazo ?? '30 días',
+      ...(entrega ? { montoEntrega: entrega } : {}),
+    },
+  };
 };
 
 const resumen = (r) => ({
@@ -450,6 +500,7 @@ server.tool(
     items: z.array(itemSchema).min(1),
     cliente: clienteSchema,
     condicionVenta: z.enum(['contado', 'credito']).default('contado'),
+    credito: creditoSchema,
   },
   async (args) => {
     try {
@@ -466,7 +517,13 @@ server.tool(
         `${receptor.tipo}: ${receptor.documento}`,
         `Cliente: ${receptor.nombre}`,
         lineas,
-        `Punto de emisión: ${establecimiento}-${punto} — Condición: ${args.condicionVenta}`,
+        `Punto de emisión: ${establecimiento}-${punto} — Condición: ${
+          args.condicionVenta === 'credito'
+            ? args.credito?.cuotas
+              ? `crédito en ${args.credito.cuotas} cuotas`
+              : `crédito a ${args.credito?.plazo ?? '30 días'}`
+            : 'contado'
+        }`,
         '-------------------------',
         `Total: ${fmtGs(total)} gs. (IVA incluido)`,
         '',
@@ -483,6 +540,7 @@ server.tool(
           items: args.items,
           cliente: receptor.cliente,
           condicionVenta: args.condicionVenta,
+          ...(args.credito ? { credito: args.credito } : {}),
         },
       });
     } catch (e) {
@@ -504,6 +562,7 @@ server.tool(
     items: z.array(itemSchema).min(1),
     cliente: clienteSchema,
     condicionVenta: z.enum(['contado', 'credito']).default('contado'),
+    credito: creditoSchema,
     moneda: z.string().length(3).default('PYG'),
     numero: z.number().int().min(1).max(9999999).optional()
       .describe('Número explícito (modo numeración-del-ERP). Omitir para numeración automática.'),
@@ -523,10 +582,7 @@ server.tool(
         moneda: args.moneda,
         cliente: buildCliente(args.cliente),
         factura: { presencia: 1 },
-        condicion:
-          args.condicionVenta === 'contado'
-            ? { tipo: 1, entregas: [{ tipo: 1, monto: String(total), moneda: args.moneda, cambio: 0 }] }
-            : { tipo: 2, credito: { tipo: 1, plazo: '30 días' } },
+        condicion: buildCondicion(args.condicionVenta, total, args.moneda, args.credito),
         items: buildItems(args.items),
       };
       const r = await api('POST', `/tenants/${tenantOf(args)}/de`, body);

@@ -18,6 +18,7 @@ import { eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { companies } from '../db/schema.js';
 import { UnauthorizedError } from '../lib/errors.js';
+import { timingSafeEqual } from 'node:crypto';
 import { hashApiKey, looksLikeApiKey, extractPrefix } from '../lib/api-keys.js';
 
 export interface AuthenticatedCompany {
@@ -63,7 +64,13 @@ export const requireAuth: preHandlerHookHandler = async (
     .where(eq(companies.apiKeyPrefix, prefix))
     .limit(5); // prefix colisiona muy rarísimo — 5 es margen
 
-  const match = rows.find((r) => r.apiKeyHash === hash);
+  // Comparación constant-time (defensa en profundidad — el input ya pasó
+  // por sha256, pero no cuesta nada hacerlo bien)
+  const hashBuf = Buffer.from(hash, 'hex');
+  const match = rows.find((r) => {
+    const rowBuf = Buffer.from(r.apiKeyHash, 'hex');
+    return rowBuf.length === hashBuf.length && timingSafeEqual(rowBuf, hashBuf);
+  });
   if (!match) {
     throw new UnauthorizedError('Invalid API key');
   }

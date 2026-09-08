@@ -253,7 +253,9 @@ export const documents = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
-    cdcUnique: uniqueIndex('documents_cdc_unique').on(t.cdc),
+    // Scoped por company (auditoría 2026-09-08): un CDC global permitiría
+    // a una company "ocupar" el CDC de otra y bloquearle la emisión
+    cdcUnique: uniqueIndex('documents_cdc_unique').on(t.companyId, t.cdc),
     // Unicidad PARCIAL: los docs rechazados/error no bloquean el número —
     // SIFEN no los registra, así que el número es fiscalmente reutilizable
     // (verificado en producción 2026-09-07: reintentar tras rechazo rompía

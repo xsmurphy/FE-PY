@@ -67,7 +67,10 @@ export const buildApp = async () => {
     },
     genReqId: () => crypto.randomUUID(),
     disableRequestLogging: false,
-    trustProxy: true,
+    // 1 hop (el reverse proxy de Coolify/Traefik) — `true` confiaría en
+    // cualquier X-Forwarded-For y permitiría falsear req.ip (rate limit
+    // por IP + audit log). Auditoría 2026-09-08.
+    trustProxy: 1,
   }).withTypeProvider<ZodTypeProvider>();
 
   app.setValidatorCompiler(validatorCompiler);
@@ -93,9 +96,11 @@ export const buildApp = async () => {
     timeWindow: env.RATE_LIMIT_WINDOW_MS,
     keyGenerator: (req) => {
       const auth = req.headers.authorization;
-      if (typeof auth === 'string' && auth.startsWith('Bearer cmp_')) {
-        // Primeros 20 chars del bearer → suficiente entropía para distinguir
-        // companies sin exponer la clave completa en logs del rate limiter
+      // SEGURIDAD (auditoría 2026-09-08): solo un bearer con FORMATO REAL de
+      // API key gana bucket propio — antes, cualquier "Bearer cmp_<random>"
+      // distinto por request anulaba el rate limit (bucket nuevo cada vez).
+      // Con formato inválido cae al bucket por IP.
+      if (typeof auth === 'string' && /^Bearer cmp_[0-9a-f]{32,128}$/.test(auth)) {
         return auth.slice(7, 27);
       }
       return req.ip;

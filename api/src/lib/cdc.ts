@@ -20,6 +20,8 @@
  * el formato del XML ya generado.
  */
 
+import { randomInt } from 'node:crypto';
+
 const CDC_REGEX = /[0-9]{44}/;
 
 /**
@@ -43,9 +45,8 @@ export const isValidCdcFormat = (cdc: string): boolean => {
  * Genera 9 dígitos random para `codigoSeguridadAleatorio` si el cliente no lo provee.
  */
 export const generateCodigoSeguridad = (): string => {
-  let code = '';
-  for (let i = 0; i < 9; i++) {
-    code += Math.floor(Math.random() * 10).toString();
-  }
-  return code;
+  // CSPRNG obligatorio (auditoría 2026-09-08): este código es el ÚNICO
+  // componente impredecible del CDC — con Math.random() los CDCs serían
+  // adivinables y consultables en el portal público de SIFEN
+  return String(randomInt(0, 1_000_000_000)).padStart(9, '0');
 };

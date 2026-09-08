@@ -268,6 +268,12 @@ export const createDeDocument = async (input: CreateDeInput): Promise<CreateDeRe
       codigoSeguridadAleatorio: codigoSeguridad,
       fecha,
     };
+    // SEGURIDAD: el motor xmlgen acepta un `cdc` provisto por el cliente
+    // SIN validar sus componentes (auditoría 2026-09-08) — un CDC forjado
+    // permitiría emitir con RUC/fecha/número ajenos. El CDC SIEMPRE lo
+    // calcula el motor a partir de los datos reales.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    delete (dataForXmlgen as any).cdc;
 
     // 3. Insertar document row con estado "generando"
     const [docRow] = await tx

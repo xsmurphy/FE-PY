@@ -80,7 +80,9 @@ FROM node:20-alpine AS runtime
 # openjdk17-jre COMPLETO (no headless) + fontconfig + ttf-dejavu: el JAR de
 # KUDE usa JasperReports, que necesita libfontmanager/AWT para renderizar el
 # PDF — con jre-headless falla con "UnsatisfiedLinkError: no fontmanager".
-RUN apk add --no-cache libxml2-utils openjdk17-jre fontconfig ttf-dejavu tini tzdata
+# curl: lo usa el healthcheck de Coolify dentro del container (sin él, el
+# deploy queda "unhealthy" con el server andando perfecto)
+RUN apk add --no-cache libxml2-utils openjdk17-jre fontconfig ttf-dejavu tini tzdata curl
 ENV TZ=America/Asuncion
 ENV JAVA_PATH=/usr/lib/jvm/default-jvm/bin/java
 

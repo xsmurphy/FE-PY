@@ -67,10 +67,11 @@ export const buildApp = async () => {
     },
     genReqId: () => crypto.randomUUID(),
     disableRequestLogging: false,
-    // 1 hop (el reverse proxy de Coolify/Traefik) — `true` confiaría en
-    // cualquier X-Forwarded-For y permitiría falsear req.ip (rate limit
-    // por IP + audit log). Auditoría 2026-09-08.
-    trustProxy: 1,
+    // Confiar SOLO en proxies de redes privadas (el Traefik de Coolify vive
+    // en la red docker) — `true` confiaría en cualquier X-Forwarded-For y
+    // permitiría falsear req.ip (rate limit por IP + audit log). Auditoría
+    // 2026-09-08. Nota: número de hops no tipa en fastify reciente.
+    trustProxy: ['127.0.0.1', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'],
   }).withTypeProvider<ZodTypeProvider>();
 
   app.setValidatorCompiler(validatorCompiler);

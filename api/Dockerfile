@@ -62,8 +62,11 @@ fs.writeFileSync(p, JSON.stringify(pkg,null,2));"
 
 # Build del API en /app/api
 WORKDIR /app/api
-COPY api/package.json api/tsconfig.json ./
-RUN npm install --ignore-scripts --include=dev
+# Lockfile + npm ci: build REPRODUCIBLE. Sin el lock, cada build resolvía
+# versiones nuevas y "compila local, rompe en el server" (deploy 2026-09-08:
+# un fastify más nuevo cambió los tipos y tumbó el build).
+COPY api/package.json api/package-lock.json api/tsconfig.json ./
+RUN npm ci --ignore-scripts --include=dev
 
 COPY api/src ./src
 RUN npm run build
@@ -96,8 +99,8 @@ COPY --from=api-builder /app/xsd-unsigned /app/xsd-unsigned
 
 # API — instalamos solo deps de producción
 WORKDIR /app/api
-COPY api/package.json ./
-RUN npm install --omit=dev --ignore-scripts && npm cache clean --force
+COPY api/package.json api/package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 
 COPY --from=api-builder /app/api/dist ./dist
 # Las migrations SQL no pasan por tsc — se copian aparte

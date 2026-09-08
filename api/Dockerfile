@@ -102,6 +102,10 @@ COPY --from=api-builder /app/xsd-unsigned /app/xsd-unsigned
 # API — instalamos solo deps de producción
 WORKDIR /app/api
 COPY mcp /app/mcp
+# Deps del MCP en SU directorio: Node resuelve desde la ruta real del
+# symlink (/app/mcp), no desde /app/api/node_modules — sin esto:
+# ERR_MODULE_NOT_FOUND @modelcontextprotocol/sdk (deploy 2026-09-08)
+RUN cd /app/mcp && npm ci --omit=dev --ignore-scripts && npm cache clean --force
 COPY api/package.json api/package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 

@@ -732,8 +732,13 @@ if (HTTP_PORT) {
       res.writeHead(404).end();
       return;
     }
+    // Auth: header "Authorization: Bearer cmp_..." O key en el path
+    // (/mcp/cmp_xxx) — necesario para claude.ai Connectors, que no permite
+    // headers custom. La URL con key es un secreto: tratarla como tal.
     const auth = req.headers.authorization;
-    const apiKey = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : undefined;
+    const pathKey = /^\/mcp\/(cmp_[0-9a-f]+)\/?$/.exec(req.url.split('?')[0])?.[1];
+    const apiKey =
+      (typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : undefined) ?? pathKey;
 
     const chunks = [];
     for await (const c of req) chunks.push(c);

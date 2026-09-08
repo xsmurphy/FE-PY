@@ -10,7 +10,11 @@
 #   command: ["worker"] # servicio worker
 set -e
 
-MODE="${1:-api}"
+# El modo se resuelve por env var APP_MODE (tiene prioridad) o por argumento.
+# APP_MODE existe porque algunas plataformas (Coolify con build pack
+# Dockerfile) no permiten sobrescribir el CMD de la imagen — con env var el
+# mismo contenedor corre como API o como worker en cualquier plataforma.
+MODE="${APP_MODE:-${1:-api}}"
 
 case "$MODE" in
   api)

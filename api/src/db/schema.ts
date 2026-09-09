@@ -74,6 +74,11 @@ export const companies = pgTable(
     apiKeyHash: text('api_key_hash').notNull(),
     apiKeyPrefix: text('api_key_prefix').notNull(), // "cmp_abc123" - primeros chars, buscable
     status: companyStatusEnum('status').notNull().default('active'),
+    // Leyenda que la plataforma agrega a TODOS los documentos de sus tenants
+    // (ej. "Usamos www.punto.la"). Va en dInfoEmi del XML, que el KUDE
+    // imprime como "Información de interés del facturador electrónico emisor".
+    // Por company: cada plataforma pone la suya, ninguna hereda la de otra.
+    leyendaDocumento: text('leyenda_documento'),
     billingEmail: text('billing_email'),
     metadata: jsonb('metadata').$type<Record<string, unknown>>().default({}),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

@@ -15,7 +15,7 @@
 import { Worker, type Job } from 'bullmq';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../../db/index.js';
-import { tenants } from '../../db/schema.js';
+import { tenants, companies } from '../../db/schema.js';
 import { createDeDocument } from '../../services/de.service.js';
 import { getRedisConnection } from '../connection.js';
 import type { SifenBatchJobData } from '../queues.js';
@@ -38,8 +38,17 @@ export const createSifenBatchWorker = () => {
         throw new Error(`Tenant ${tenantId} not found for company ${companyId}`);
       }
 
+      // La leyenda de la plataforma también aplica al batch — si no, los
+      // documentos por lote saldrían sin ella (divergencia silenciosa).
+      const [company] = await db
+        .select({ leyendaDocumento: companies.leyendaDocumento })
+        .from(companies)
+        .where(eq(companies.id, companyId))
+        .limit(1);
+
       const result = await createDeDocument({
         companyId,
+        leyendaDocumento: company?.leyendaDocumento ?? null,
         tenant,
         body,
         idempotencyKey: `batch-${batchId}-${index}`,

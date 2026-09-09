@@ -1,0 +1,1 @@
+ALTER TABLE "companies" ADD COLUMN "leyenda_documento" text;

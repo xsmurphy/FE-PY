@@ -61,6 +61,8 @@ const qrgen = require('facturacionelectronicapy-qrgen').default;
 
 export interface CreateDeInput {
   companyId: string;
+  /** Leyenda de la plataforma para dInfoEmi (ver companies.leyendaDocumento) */
+  leyendaDocumento?: string | null;
   tenant: Tenant;
   // Body pasado por el cliente — estructura del motor xmlgen
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -199,6 +201,23 @@ const signXmlWithBundle = async (xml: string, bundle: EncryptedCertBundle): Prom
 // Pipeline principal
 // ═════════════════════════════════════════════════════════════════
 
+/**
+ * dInfoEmi = "Información de interés del emisor" (máx 3000, XSD SIFEN).
+ * El KUDE lo imprime al pie. Combinamos lo que mande el integrador con la
+ * leyenda de la plataforma: la leyenda NUNCA pisa el texto del comercio.
+ */
+const construirInfoEmi = (
+  observacion: unknown,
+  leyenda?: string | null,
+): string | undefined => {
+  const partes = [
+    typeof observacion === 'string' ? observacion.trim() : '',
+    (leyenda ?? '').trim(),
+  ].filter(Boolean);
+  if (partes.length === 0) return undefined;
+  return partes.join(' — ').slice(0, 3000);
+};
+
 export const createDeDocument = async (input: CreateDeInput): Promise<CreateDeResult> => {
   const { tenant, body, companyId } = input;
   const tipoDocumento = Number(body.tipoDocumento ?? 1);
@@ -259,8 +278,11 @@ export const createDeDocument = async (input: CreateDeInput): Promise<CreateDeRe
     );
     const fecha = body.fecha ?? nowAsuncion();
 
+    const infoEmi = construirInfoEmi(body.observacion, input.leyendaDocumento);
+
     const dataForXmlgen = {
       ...body,
+      ...(infoEmi ? { observacion: infoEmi } : {}),
       tipoDocumento,
       establecimiento,
       punto,

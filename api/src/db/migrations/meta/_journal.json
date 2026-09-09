@@ -43,6 +43,13 @@
       "when": 1788973684897,
       "tag": "0005_tenant_logo_url",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1788978200465,
+      "tag": "0006_company_leyenda",
+      "breakpoints": true
     }
   ]
 }

@@ -190,6 +190,7 @@ export const documentRoutes: FastifyPluginAsyncZod = async (app) => {
     async (request, reply) => {
       const result = await createDeDocument({
         companyId: request.company!.id,
+        leyendaDocumento: request.company!.leyendaDocumento,
         tenant: request.tenant!,
         body: request.body as Record<string, unknown>,
         idempotencyKey: request.idempotency?.key,

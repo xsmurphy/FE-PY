@@ -25,6 +25,8 @@ export interface AuthenticatedCompany {
   id: string;
   name: string;
   status: 'active' | 'suspended' | 'deleted';
+  /** Leyenda que se agrega a dInfoEmi de todos los documentos de la company */
+  leyendaDocumento: string | null;
 }
 
 // Augment del request para que TS vea `request.company`
@@ -59,6 +61,7 @@ export const requireAuth: preHandlerHookHandler = async (
       name: companies.name,
       status: companies.status,
       apiKeyHash: companies.apiKeyHash,
+      leyendaDocumento: companies.leyendaDocumento,
     })
     .from(companies)
     .where(eq(companies.apiKeyPrefix, prefix))
@@ -83,5 +86,6 @@ export const requireAuth: preHandlerHookHandler = async (
     id: match.id,
     name: match.name,
     status: match.status,
+    leyendaDocumento: match.leyendaDocumento ?? null,
   };
 };

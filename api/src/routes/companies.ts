@@ -163,6 +163,62 @@ export const companyRoutes: FastifyPluginAsyncZod = async (app) => {
   );
 
   // ─────────────────────────────────────────────────────
+  // PATCH /v1/companies/me — configuración de la plataforma
+  // ─────────────────────────────────────────────────────
+  app.patch(
+    '/companies/me',
+    {
+      preHandler: requireAuth,
+      schema: {
+        tags: ['companies'],
+        summary: 'Actualizar configuración de la company',
+        security: [{ bearerAuth: [] }],
+        body: z.object({
+          name: z.string().min(2).max(200).optional(),
+          billingEmail: z.string().email().optional(),
+          leyendaDocumento: z
+            .string()
+            .max(500)
+            .nullable()
+            .optional()
+            .describe(
+              'Leyenda que se agrega a TODOS los documentos de la company (ej. "Usamos www.punto.la"). ' +
+                'Va en dInfoEmi del XML y el KUDE la imprime como "Información de interés del ' +
+                'facturador electrónico emisor". null la elimina.',
+            ),
+        }),
+        response: {
+          200: z.object({
+            id: z.string().uuid(),
+            name: z.string(),
+            email: z.string(),
+            leyendaDocumento: z.string().nullable(),
+          }),
+        },
+      },
+    },
+    async (request) => {
+      const patch: Record<string, unknown> = { updatedAt: new Date() };
+      if (request.body.name !== undefined) patch.name = request.body.name;
+      if (request.body.billingEmail !== undefined) patch.billingEmail = request.body.billingEmail;
+      if (request.body.leyendaDocumento !== undefined) {
+        patch.leyendaDocumento = request.body.leyendaDocumento;
+      }
+      const [updated] = await db
+        .update(companies)
+        .set(patch)
+        .where(eq(companies.id, request.company!.id))
+        .returning();
+      return {
+        id: updated.id,
+        name: updated.name,
+        email: updated.email,
+        leyendaDocumento: updated.leyendaDocumento ?? null,
+      };
+    },
+  );
+
+  // ─────────────────────────────────────────────────────
   // GET /v1/companies/me — perfil (REQUIERE AUTH)
   // ─────────────────────────────────────────────────────
   app.get(

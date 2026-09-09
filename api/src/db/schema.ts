@@ -125,6 +125,9 @@ export const tenants = pgTable(
     actividadesEconomicas: jsonb('actividades_economicas').$type<
       Array<{ codigo: string; descripcion: string }>
     >().notNull(),
+    // URL pública del logo del contribuyente — se inyecta en el KUDE (PDF)
+    // como parámetro LOGO_URL del template Jasper.
+    logoUrl: text('logo_url'),
     env: sifenEnvEnum('env').notNull().default('test'),
     status: tenantStatusEnum('status').notNull().default('active'),
     metadata: jsonb('metadata').$type<Record<string, unknown>>().default({}),

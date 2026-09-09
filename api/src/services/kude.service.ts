@@ -86,7 +86,10 @@ export interface KudeResult {
  * Retorna {ok: false} si ENABLE_KUDE=false o si el paquete/Java no está
  * disponible — el caller debe tratar esto como opcional, no como error.
  */
-export const generateKudePdf = async (xmlSigned: string): Promise<KudeResult> => {
+export const generateKudePdf = async (
+  xmlSigned: string,
+  options: { logoUrl?: string | null } = {},
+): Promise<KudeResult> => {
   if (!env.ENABLE_KUDE) {
     return { ok: false, reason: 'ENABLE_KUDE=false' };
   }
@@ -116,7 +119,9 @@ export const generateKudePdf = async (xmlSigned: string): Promise<KudeResult> =>
 
     const srcJasper = getJasperTemplatesDir() + '/';
     const destFolder = tmpDir + '/';
-    const jsonParam = JSON.stringify({}); // params extra al reporte (logo, etc.)
+    // LOGO_URL es el parámetro que expone el template Jasper para el logo
+    // del contribuyente (verificado en los .jasper bundleados).
+    const jsonParam = JSON.stringify(options.logoUrl ? { LOGO_URL: options.logoUrl } : {});
 
     // Llamamos directamente al inner API (5 params) en vez del wrapper roto
     await KUDEGen.generateKUDE(env.JAVA_PATH, xmlPath, srcJasper, destFolder, jsonParam);

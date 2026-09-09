@@ -392,7 +392,7 @@ export const createDeDocument = async (input: CreateDeInput): Promise<CreateDeRe
     //     el KUDE se puede regenerar después desde el XML persistido.
     let kudeKey: string | null = null;
     if (env.ENABLE_SIFEN && env.ENABLE_KUDE) {
-      const kudeResult = await generateKudePdf(xmlFinal);
+      const kudeResult = await generateKudePdf(xmlFinal, { logoUrl: tenant.logoUrl });
       if (kudeResult.ok && kudeResult.pdfBuffer) {
         kudeKey = storageKey.kude(companyId, tenant.id, cdc);
         await uploadObject(kudeKey, kudeResult.pdfBuffer, { contentType: 'application/pdf' });

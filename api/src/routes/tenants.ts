@@ -10,6 +10,7 @@ import {
 } from '../services/tenant.service.js';
 import { setNumeracion, listNumeracion } from '../services/numeracion.service.js';
 import { validarRuc, normalizarRuc } from '../lib/ruc.js';
+import { validarLogoUrl } from '../lib/logo-url.js';
 import { BadRequestError } from '../lib/errors.js';
 import { db } from '../db/index.js';
 import { tenantCerts, tenantCsc } from '../db/schema.js';
@@ -57,6 +58,7 @@ const tenantResponseSchema = z.object({
   timbradoVencimiento: z.string().nullable(),
   tipoContribuyente: z.number(),
   tipoRegimen: z.number(),
+  logoUrl: z.string().nullable(),
   env: z.enum(['test', 'prod']),
   status: z.enum(['active', 'suspended']),
   createdAt: z.string(),
@@ -80,6 +82,7 @@ const serializeTenant = (t: any) => ({
     : null,
   tipoContribuyente: t.tipoContribuyente,
   tipoRegimen: t.tipoRegimen,
+  logoUrl: t.logoUrl ?? null,
   env: t.env,
   status: t.status,
   createdAt: t.createdAt.toISOString(),
@@ -113,6 +116,8 @@ export const tenantRoutes: FastifyPluginAsyncZod = async (app) => {
           tipoRegimen: z.number().int().min(1).max(15),
           establecimientos: z.array(establecimientoSchema).min(1),
           actividadesEconomicas: z.array(actividadEconomicaSchema).min(1),
+          logoUrl: z.string().url().optional()
+            .describe('URL https pública del logo (png/jpg/gif) — se incrusta en el KUDE'),
           env: z.enum(['test', 'prod']).default('test'),
         }),
         response: {
@@ -127,6 +132,10 @@ export const tenantRoutes: FastifyPluginAsyncZod = async (app) => {
       const rucNorm = normalizarRuc(request.body.ruc);
       if (!rucNorm.ruc) {
         throw new BadRequestError(rucNorm.error!);
+      }
+      if (request.body.logoUrl) {
+        const logoCheck = validarLogoUrl(request.body.logoUrl);
+        if (!logoCheck.valid) throw new BadRequestError(logoCheck.error!);
       }
       const tenant = await createTenant({
         companyId: request.company!.id,
@@ -218,6 +227,8 @@ export const tenantRoutes: FastifyPluginAsyncZod = async (app) => {
           tipoRegimen: z.number().int().min(1).max(15).optional(),
           establecimientos: z.array(establecimientoSchema).optional(),
           actividadesEconomicas: z.array(actividadEconomicaSchema).optional(),
+          logoUrl: z.string().url().nullable().optional()
+            .describe('URL https pública del logo. null lo elimina.'),
           env: z.enum(['test', 'prod']).optional(),
           status: z.enum(['active', 'suspended']).optional(),
         }),
@@ -227,6 +238,10 @@ export const tenantRoutes: FastifyPluginAsyncZod = async (app) => {
       },
     },
     async (request) => {
+      if (request.body.logoUrl) {
+        const logoCheck = validarLogoUrl(request.body.logoUrl);
+        if (!logoCheck.valid) throw new BadRequestError(logoCheck.error!);
+      }
       const updated = await updateTenant(
         request.company!.id,
         request.tenant!.id,

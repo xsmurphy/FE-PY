@@ -36,6 +36,13 @@
       "when": 1788910874742,
       "tag": "0004_setup_links",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1788973684897,
+      "tag": "0005_tenant_logo_url",
+      "breakpoints": true
     }
   ]
 }

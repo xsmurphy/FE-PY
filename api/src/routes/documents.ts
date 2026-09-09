@@ -268,6 +268,81 @@ export const documentRoutes: FastifyPluginAsyncZod = async (app) => {
   );
 
   // ─────────────────────────────────────────────────────
+  // GET /v1/tenants/:tenant_id/de/numero/:establecimiento/:punto/:numero
+  //
+  // Reconciliación: cuando el integrador perdió la respuesta del POST (o no
+  // pudo persistir el CDC) necesita saber si el documento se emitió ANTES de
+  // reintentar — reintentar a ciegas arriesga una doble emisión fiscal.
+  // Devuelve todos los intentos de ese número, el activo primero.
+  // ─────────────────────────────────────────────────────
+  app.get(
+    '/tenants/:tenant_id/de/numero/:establecimiento/:punto/:numero',
+    {
+      preHandler: [requireAuth, requireTenantScope],
+      schema: {
+        tags: ['documents'],
+        summary: 'Buscar documentos por establecimiento, punto y número (reconciliación)',
+        security: [{ bearerAuth: [] }],
+        params: z.object({
+          tenant_id: z.string().uuid(),
+          establecimiento: z.string().regex(/^\d{1,3}$/),
+          punto: z.string().regex(/^\d{1,3}$/),
+          numero: z.string().regex(/^\d{1,7}$/),
+        }),
+        querystring: z.object({
+          tipoDocumento: z.coerce.number().int().min(1).max(8).optional(),
+        }),
+        response: {
+          200: z.object({
+            // el documento con validez fiscal, si existe (aprobado o en curso)
+            vigente: deResponseSchema.nullable(),
+            intentos: z.array(documentListItemSchema),
+          }),
+        },
+      },
+    },
+    async (request) => {
+      const { establecimiento, punto, numero } = request.params;
+      const filtros = [
+        eq(documents.companyId, request.company!.id),
+        eq(documents.tenantId, request.tenant!.id),
+        eq(documents.establecimiento, establecimiento.padStart(3, '0')),
+        eq(documents.punto, punto.padStart(3, '0')),
+        eq(documents.numero, numero.padStart(7, '0')),
+      ];
+      if (request.query.tipoDocumento !== undefined) {
+        filtros.push(eq(documents.tipo, request.query.tipoDocumento));
+      }
+      const rows = await db
+        .select()
+        .from(documents)
+        .where(and(...filtros))
+        .orderBy(desc(documents.createdAt));
+
+      // "vigente" = el que tiene efecto fiscal: los rechazado/error no cuentan
+      const activo = rows.find((r) => !['rechazado', 'error'].includes(r.estado));
+
+      return {
+        vigente: activo ? await serializeDocument(activo, true) : null,
+        intentos: rows.map((r) => ({
+          txnId: r.id,
+          cdc: r.cdc,
+          tipo: r.tipo,
+          numero: r.numero,
+          establecimiento: r.establecimiento,
+          punto: r.punto,
+          estado: r.estado,
+          montoTotal: r.montoTotal,
+          moneda: r.moneda,
+          fechaEmision: r.fechaEmision.toISOString(),
+          errorMessage: r.errorMessage ?? null,
+          createdAt: r.createdAt.toISOString(),
+        })),
+      };
+    },
+  );
+
+  // ─────────────────────────────────────────────────────
   // GET /v1/tenants/:tenant_id/de/txn/:txn_id — detalle por txnId
   //
   // Un documento que falló ANTES de generar el CDC (estado "error") no es

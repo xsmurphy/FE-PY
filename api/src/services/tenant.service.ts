@@ -23,6 +23,7 @@ export interface CreateTenantInput {
   tipoRegimen: number;
   establecimientos: NewTenant['establecimientos'];
   actividadesEconomicas: NewTenant['actividadesEconomicas'];
+  logoUrl?: string;
   env?: 'test' | 'prod';
 }
 
@@ -37,6 +38,7 @@ export interface UpdateTenantInput {
   tipoRegimen?: number;
   establecimientos?: NewTenant['establecimientos'];
   actividadesEconomicas?: NewTenant['actividadesEconomicas'];
+  logoUrl?: string | null;
   env?: 'test' | 'prod';
   status?: 'active' | 'suspended';
 }
@@ -64,6 +66,7 @@ export const createTenant = async (input: CreateTenantInput): Promise<Tenant> =>
       razonSocial: input.razonSocial,
       nombreFantasia: input.nombreFantasia,
       timbradoNumero: input.timbradoNumero,
+      logoUrl: input.logoUrl,
       timbradoFecha: input.timbradoFecha,
       timbradoVencimiento: input.timbradoVencimiento,
       tipoContribuyente: input.tipoContribuyente,
@@ -145,6 +148,7 @@ export const updateTenant = async (
   if (input.tipoRegimen !== undefined) patch.tipoRegimen = input.tipoRegimen;
   if (input.establecimientos !== undefined) patch.establecimientos = input.establecimientos;
   if (input.actividadesEconomicas !== undefined) patch.actividadesEconomicas = input.actividadesEconomicas;
+  if (input.logoUrl !== undefined) patch.logoUrl = input.logoUrl;
   if (input.env !== undefined) patch.env = input.env;
   if (input.status !== undefined) patch.status = input.status;
 

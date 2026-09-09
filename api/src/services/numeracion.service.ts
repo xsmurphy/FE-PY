@@ -94,6 +94,36 @@ export const asignarSiguienteNumero = async (
 };
 
 /**
+ * Devuelve un número al contador cuando el documento murió ANTES de que
+ * SIFEN lo registrara (validación local, firma, etc.). Sin esto el
+ * correlativo salta: en producción un tenant llegó a 838 con el último
+ * aprobado en 619 por intentos que fallaron en validación XSD.
+ *
+ * Condicional a propósito: solo retrocede si el contador sigue exactamente
+ * en ese número, o sea si nadie más avanzó mientras tanto. Bajo concurrencia
+ * simplemente no hace nada — mejor un salto que pisar el número de otro.
+ */
+export const devolverNumero = async (input: {
+  tenantId: string;
+  tipo: number;
+  establecimiento: string;
+  punto: string;
+  numero: number;
+}): Promise<boolean> => {
+  const res = await db.execute(sql`
+    UPDATE numeracion
+       SET ultimo_numero = ${input.numero - 1}, updated_at = now()
+     WHERE tenant_id = ${input.tenantId}
+       AND tipo = ${input.tipo}
+       AND establecimiento = ${input.establecimiento}
+       AND punto = ${input.punto}
+       AND ultimo_numero = ${input.numero}
+    RETURNING ultimo_numero
+  `);
+  return (res as unknown as unknown[]).length > 0;
+};
+
+/**
  * Modo "numeración del tenant": el cliente mandó `numero` explícito en la
  * emisión. Sincroniza la secuencia interna hacia ARRIBA (GREATEST) para que
  * el modo automático siga coherente si se mezclan modos — nunca retrocede.

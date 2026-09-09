@@ -24,7 +24,11 @@ import { randomUUID } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { documents, tenantCerts, type Tenant } from '../db/schema.js';
-import { asignarSiguienteNumero, registrarNumeroExplicito } from './numeracion.service.js';
+import {
+  asignarSiguienteNumero,
+  registrarNumeroExplicito,
+  devolverNumero,
+} from './numeracion.service.js';
 import { validatePreSigning, validatePostSigning } from '../lib/xsd-validator.js';
 import { extractCdc, extractQrUrl, generateCodigoSeguridad } from '../lib/cdc.js';
 import {
@@ -564,6 +568,29 @@ export const createDeDocument = async (input: CreateDeInput): Promise<CreateDeRe
       .update(documents)
       .set({ estado: 'error', errorMessage: msg, updatedAt: new Date() })
       .where(eq(documents.id, docId));
+
+    // Si el documento nunca llegó a SIFEN, el número no se consumió
+    // fiscalmente: lo devolvemos al contador para no saltear correlativos.
+    // Solo aplica a la numeración automática — si el número lo puso el
+    // integrador, el contador es suyo y no lo tocamos.
+    if (numeroExplicito == null) {
+      const [row] = await db
+        .select({ sifenResponseRaw: documents.sifenResponseRaw })
+        .from(documents)
+        .where(eq(documents.id, docId))
+        .limit(1);
+      if (!row?.sifenResponseRaw) {
+        await devolverNumero({
+          tenantId: tenant.id,
+          tipo: tipoDocumento,
+          establecimiento,
+          punto,
+          numero: Number(numero),
+        }).catch(() => {
+          // best effort: un salto de numeración no debe tapar el error real
+        });
+      }
+    }
     throw err;
   }
 };

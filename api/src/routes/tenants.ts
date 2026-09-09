@@ -13,8 +13,8 @@ import { validarRuc, normalizarRuc } from '../lib/ruc.js';
 import { validarLogoUrl } from '../lib/logo-url.js';
 import { BadRequestError } from '../lib/errors.js';
 import { db } from '../db/index.js';
-import { tenantCerts, tenantCsc } from '../db/schema.js';
-import { and, eq } from 'drizzle-orm';
+import { tenantCerts, tenantCsc, tenants } from '../db/schema.js';
+import { and, eq, ne } from 'drizzle-orm';
 
 // ─────────────────────────────────────────────────────
 // Zod schemas compartidos
@@ -430,6 +430,58 @@ export const tenantRoutes: FastifyPluginAsyncZod = async (app) => {
             : problemasEmisor.join('; '),
       });
 
+      // 3b. Timbrado: vencimiento cargado y no vencido. Sin este dato nadie
+      //     puede avisar al comercio antes de que se le corte la facturación.
+      const venc = tenant.timbradoVencimiento
+        ? new Date(
+            typeof tenant.timbradoVencimiento === 'string'
+              ? tenant.timbradoVencimiento
+              : (tenant.timbradoVencimiento as unknown as Date).toISOString(),
+          )
+        : null;
+      if (!venc) {
+        checks.push({
+          check: 'timbrado',
+          ok: false,
+          detail:
+            `timbrado ${tenant.timbradoNumero} sin fecha de vencimiento cargada — ` +
+            'no se puede alertar antes de que venza; cargarla con PATCH /v1/tenants/:id (timbradoVencimiento)',
+        });
+      } else {
+        const diasTimbrado = Math.floor((venc.getTime() - Date.now()) / 86_400_000);
+        checks.push({
+          check: 'timbrado',
+          ok: diasTimbrado > 0,
+          detail:
+            diasTimbrado > 0
+              ? `timbrado ${tenant.timbradoNumero} vigente, vence en ${diasTimbrado} días (${venc.toISOString().slice(0, 10)})`
+              : `timbrado ${tenant.timbradoNumero} VENCIDO el ${venc.toISOString().slice(0, 10)} — SIFEN rechaza toda emisión`,
+        });
+      }
+
+      // 3c. Colisión de talonario: otro tenant ACTIVO con el mismo RUC y
+      //     timbrado emitiendo en el mismo punto duplica numeración en SIFEN,
+      //     aunque pertenezca a otra company.
+      const gemelos = await db
+        .select({ id: tenants.id })
+        .from(tenants)
+        .where(
+          and(
+            eq(tenants.ruc, tenant.ruc),
+            eq(tenants.timbradoNumero, tenant.timbradoNumero),
+            eq(tenants.status, 'active'),
+            ne(tenants.id, tenant.id),
+          ),
+        );
+      checks.push({
+        check: 'talonario_exclusivo',
+        ok: gemelos.length === 0,
+        detail:
+          gemelos.length === 0
+            ? `RUC ${tenant.ruc} + timbrado ${tenant.timbradoNumero} sin otros emisores activos`
+            : `Hay ${gemelos.length} tenant(s) activo(s) más con el MISMO RUC y timbrado — riesgo de numeración duplicada en SIFEN. Dar de baja los que no se usen.`,
+      });
+
       // 4. Certificado cargado, no revocado, vigente
       const [cert] = await db
         .select({ revokedAt: tenantCerts.revokedAt, notAfter: tenantCerts.notAfter })
@@ -476,7 +528,13 @@ export const tenantRoutes: FastifyPluginAsyncZod = async (app) => {
       });
 
       // ready = todos los checks críticos ok (numeración es informativa)
-      const ready = checks.filter((c) => c.check !== 'numeracion').every((c) => c.ok);
+      // `numeracion`, `timbrado` (falta la fecha) y `talonario_exclusivo` son
+      // advertencias operativas: no impiden emitir hoy. Un timbrado VENCIDO sí.
+      const soloAdvertencia = new Set(['numeracion', 'talonario_exclusivo']);
+      const ready = checks
+        .filter((c) => !soloAdvertencia.has(c.check))
+        .filter((c) => !(c.check === 'timbrado' && !venc))
+        .every((c) => c.ok);
 
       return {
         ready,

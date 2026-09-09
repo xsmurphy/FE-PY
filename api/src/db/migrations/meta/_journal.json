@@ -50,6 +50,13 @@
       "when": 1788978200465,
       "tag": "0006_company_leyenda",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1788980947396,
+      "tag": "0007_document_qr_url",
+      "breakpoints": true
     }
   ]
 }

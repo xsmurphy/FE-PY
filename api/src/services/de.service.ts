@@ -26,7 +26,7 @@ import { db } from '../db/index.js';
 import { documents, tenantCerts, type Tenant } from '../db/schema.js';
 import { asignarSiguienteNumero, registrarNumeroExplicito } from './numeracion.service.js';
 import { validatePreSigning, validatePostSigning } from '../lib/xsd-validator.js';
-import { extractCdc, generateCodigoSeguridad } from '../lib/cdc.js';
+import { extractCdc, extractQrUrl, generateCodigoSeguridad } from '../lib/cdc.js';
 import {
   decryptCertBundle,
   type EncryptedCertBundle,
@@ -370,6 +370,7 @@ export const createDeDocument = async (input: CreateDeInput): Promise<CreateDeRe
     let sifenCodigoRespuesta: string | undefined;
     let sifenMensaje: string | undefined;
     let sifenProtocoloAutorizacion: string | undefined;
+    let qrUrl: string | null = null;
     let sifenLoteNumero: string | undefined;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let sifenResponseRaw: Record<string, any> | undefined;
@@ -402,6 +403,7 @@ export const createDeDocument = async (input: CreateDeInput): Promise<CreateDeRe
       }
 
       xmlFinal = xmlWithQr;
+      qrUrl = extractQrUrl(xmlWithQr);
     }
 
     // 7. Subir XML a S3 SIEMPRE antes del envío — así el retry worker
@@ -432,6 +434,7 @@ export const createDeDocument = async (input: CreateDeInput): Promise<CreateDeRe
       .update(documents)
       .set({
         cdc,
+        qrUrl,
         xmlStorageKey: xmlKey,
         kudeStorageKey: kudeKey,
         estado: env.ENABLE_SIFEN ? 'enviando' : 'pendiente',

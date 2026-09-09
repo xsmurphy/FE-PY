@@ -40,3 +40,20 @@ describe('RUC paraguayo — dígito verificador módulo 11', () => {
     expect(normalizarRuc('abc').error).toBeDefined();
   });
 });
+
+describe('extractQrUrl — dCarQR del XML firmado', () => {
+  it('extrae y desescapa la URL del QR', async () => {
+    const { extractQrUrl } = await import('../../src/lib/cdc.js');
+    const xml =
+      '<gCamFuFD><dCarQR>https://ekuatia.set.gov.py/consultas/qr?nVersion=150&amp;Id=0103&amp;cHashQR=abc</dCarQR></gCamFuFD>';
+    expect(extractQrUrl(xml)).toBe(
+      'https://ekuatia.set.gov.py/consultas/qr?nVersion=150&Id=0103&cHashQR=abc',
+    );
+  });
+
+  it('devuelve null si el XML no tiene QR (sin CSC configurado)', async () => {
+    const { extractQrUrl } = await import('../../src/lib/cdc.js');
+    expect(extractQrUrl('<rDE><DE/></rDE>')).toBeNull();
+    expect(extractQrUrl('<dCarQR></dCarQR>')).toBeNull();
+  });
+});

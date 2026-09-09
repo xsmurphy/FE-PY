@@ -15,6 +15,7 @@ import {
   extractSifenMensaje,
   extractSifenEstado,
 } from '../lib/sifen-response.js';
+import { extractQrUrl } from '../lib/cdc.js';
 import { idempotencyCheck, idempotencyPersist } from '../middleware/idempotency.js';
 import { createDeDocument } from '../services/de.service.js';
 import { isDocumentCancelled } from '../services/evento.service.js';
@@ -84,6 +85,7 @@ const deResponseSchema = z.object({
   sentToSifen: z.boolean(),
   cancelled: z.boolean(),
   errorMessage: z.string().nullable().optional(),
+  qrUrl: z.string().nullable().describe('dCarQR del XML firmado — imprimir EXACTAMENTE esta URL en el ticket'),
   sifen: z
     .object({
       codigoRespuesta: z.string().optional(),
@@ -109,6 +111,26 @@ const documentListItemSchema = z.object({
   errorMessage: z.string().nullable(),
   createdAt: z.string(),
 });
+
+/**
+ * Backfill perezoso del QR: los documentos emitidos ANTES de que
+ * persistiéramos `qr_url` lo tienen en null, pero el dato está en el XML
+ * firmado guardado en S3. Lo extraemos una vez, lo persistimos y listo —
+ * así el integrador puede reimprimir tickets viejos.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const backfillQrUrl = async (row: any): Promise<any> => {
+  if (row.qrUrl || !row.xmlStorageKey) return row;
+  try {
+    const xml = (await getObject(row.xmlStorageKey)).toString('utf8');
+    const qrUrl = extractQrUrl(xml);
+    if (!qrUrl) return row;
+    await db.update(documents).set({ qrUrl }).where(eq(documents.id, row.id));
+    return { ...row, qrUrl };
+  } catch {
+    return row; // el QR no es crítico para la respuesta
+  }
+};
 
 // Helper: serializa un document row a la shape pública
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -148,6 +170,7 @@ const serializeDocument = async (row: any, withPresignedUrl: boolean) => {
     signed: !!row.sifenResponseRaw || row.estado === 'aprobado',
     sentToSifen: !!row.sifenResponseRaw,
     errorMessage: row.errorMessage ?? null,
+    qrUrl: row.qrUrl ?? null,
     cancelled,
     sifen: row.sifenCodigoRespuesta
       ? {
@@ -324,7 +347,7 @@ export const documentRoutes: FastifyPluginAsyncZod = async (app) => {
       const activo = rows.find((r) => !['rechazado', 'error'].includes(r.estado));
 
       return {
-        vigente: activo ? await serializeDocument(activo, true) : null,
+        vigente: activo ? await serializeDocument(await backfillQrUrl(activo), true) : null,
         intentos: rows.map((r) => ({
           txnId: r.id,
           cdc: r.cdc,
@@ -378,7 +401,7 @@ export const documentRoutes: FastifyPluginAsyncZod = async (app) => {
         )
         .limit(1);
       if (!row) throw new NotFoundError('Document');
-      return serializeDocument(row, true);
+      return serializeDocument(await backfillQrUrl(row), true);
     },
   );
 
@@ -416,7 +439,7 @@ export const documentRoutes: FastifyPluginAsyncZod = async (app) => {
         .limit(1);
 
       if (!row) throw new NotFoundError('Document');
-      return serializeDocument(row, true);
+      return serializeDocument(await backfillQrUrl(row), true);
     },
   );
 

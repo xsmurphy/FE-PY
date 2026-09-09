@@ -250,6 +250,10 @@ export const documents = pgTable(
     // y número de lote (dProtConsLote) del envío asíncrono — el canal real
     // de producción (el síncrono `recibe` está restringido, código 1264)
     sifenProtocoloAutorizacion: text('sifen_protocolo_autorizacion'),
+    // dCarQR del XML firmado: la URL de consulta pública de eKuatia que el
+    // integrador imprime en el ticket. Se persiste al emitir para no obligar
+    // a bajar el XML solo para imprimir.
+    qrUrl: text('qr_url'),
     sifenLoteNumero: text('sifen_lote_numero'),
 
     // operacional

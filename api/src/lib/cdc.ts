@@ -50,3 +50,26 @@ export const generateCodigoSeguridad = (): string => {
   // adivinables y consultables en el portal público de SIFEN
   return String(randomInt(0, 1_000_000_000)).padStart(9, '0');
 };
+
+/**
+ * Extrae el `dCarQR` del XML firmado (bloque gCamFuFD que agrega qrgen).
+ *
+ * Es la URL de consulta pública de eKuatia con el hash del documento. El
+ * integrador DEBE imprimir exactamente esta, no una recalculada: si el hash
+ * difiere, el QR del ticket no valida contra el DE que firmamos.
+ *
+ * El contenido viene XML-escapado (&amp; entre parámetros) — lo devolvemos
+ * listo para usar.
+ */
+export const extractQrUrl = (xml: string): string | null => {
+  const match = /<dCarQR>([\s\S]*?)<\/dCarQR>/.exec(xml);
+  if (!match) return null;
+  const raw = match[1].trim();
+  if (!raw) return null;
+  return raw
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'");
+};

@@ -83,6 +83,7 @@ const deResponseSchema = z.object({
   signed: z.boolean(),
   sentToSifen: z.boolean(),
   cancelled: z.boolean(),
+  errorMessage: z.string().nullable().optional(),
   sifen: z
     .object({
       codigoRespuesta: z.string().optional(),
@@ -105,6 +106,7 @@ const documentListItemSchema = z.object({
   montoTotal: z.string(),
   moneda: z.string(),
   fechaEmision: z.string(),
+  errorMessage: z.string().nullable(),
   createdAt: z.string(),
 });
 
@@ -145,6 +147,7 @@ const serializeDocument = async (row: any, withPresignedUrl: boolean) => {
     kudeUrl,
     signed: !!row.sifenResponseRaw || row.estado === 'aprobado',
     sentToSifen: !!row.sifenResponseRaw,
+    errorMessage: row.errorMessage ?? null,
     cancelled,
     sifen: row.sifenCodigoRespuesta
       ? {
@@ -256,10 +259,50 @@ export const documentRoutes: FastifyPluginAsyncZod = async (app) => {
           montoTotal: r.montoTotal,
           moneda: r.moneda,
           fechaEmision: r.fechaEmision.toISOString(),
+          errorMessage: r.errorMessage ?? null,
           createdAt: r.createdAt.toISOString(),
         })),
         pagination: { limit, offset },
       };
+    },
+  );
+
+  // ─────────────────────────────────────────────────────
+  // GET /v1/tenants/:tenant_id/de/txn/:txn_id — detalle por txnId
+  //
+  // Un documento que falló ANTES de generar el CDC (estado "error") no es
+  // consultable por CDC — sin esta ruta el integrador no puede recuperar
+  // el motivo del fallo. El txnId siempre existe, se devuelve en el POST.
+  // ─────────────────────────────────────────────────────
+  app.get(
+    '/tenants/:tenant_id/de/txn/:txn_id',
+    {
+      preHandler: [requireAuth, requireTenantScope],
+      schema: {
+        tags: ['documents'],
+        summary: 'Detalle de un documento por txnId (sirve aunque no tenga CDC)',
+        security: [{ bearerAuth: [] }],
+        params: z.object({
+          tenant_id: z.string().uuid(),
+          txn_id: z.string().uuid(),
+        }),
+        response: { 200: deResponseSchema },
+      },
+    },
+    async (request) => {
+      const [row] = await db
+        .select()
+        .from(documents)
+        .where(
+          and(
+            eq(documents.companyId, request.company!.id),
+            eq(documents.tenantId, request.tenant!.id),
+            eq(documents.id, request.params.txn_id),
+          ),
+        )
+        .limit(1);
+      if (!row) throw new NotFoundError('Document');
+      return serializeDocument(row, true);
     },
   );
 

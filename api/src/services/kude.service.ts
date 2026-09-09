@@ -37,6 +37,8 @@
  *     - stdout parsing (stdout vs file output)
  */
 import { createRequire } from 'node:module';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { writeFile, readFile, unlink, mkdtemp, rm, readdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -45,6 +47,7 @@ import { env } from '../config/env.js';
 import { extractCdc } from '../lib/cdc.js';
 
 const require = createRequire(import.meta.url);
+const execFileAsync = promisify(execFile);
 
 // Cache del path del paquete y sus templates bundleados
 let kudePkgPath: string | null = null;
@@ -126,10 +129,6 @@ export const generateKudePdf = async (
     xmlPath = join(tmpDir, 'de.xml');
     await writeFile(xmlPath, xmlSigned, 'utf8');
 
-    // Importar el módulo interno que tiene la firma correcta
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const KUDEGen = require('facturacionelectronicapy-kude/dist/KUDEGen').default;
-
     const srcJasper = getJasperTemplatesDir() + '/';
     const destFolder = tmpDir + '/';
     // LOGO_URL es el parámetro que expone el template Jasper para el logo
@@ -139,8 +138,29 @@ export const generateKudePdf = async (
       ...(options.logoUrl ? { LOGO_URL: options.logoUrl } : {}),
     });
 
-    // Llamamos directamente al inner API (5 params) en vez del wrapper roto
-    await KUDEGen.generateKUDE(env.JAVA_PATH, xmlPath, srcJasper, destFolder, jsonParam);
+    // Ejecutamos Java NOSOTROS con execFile (args como array, SIN shell).
+    // KUDEGen arma el comando como string y interpola el jsonParam entre
+    // comillas dobles: con un JSON real ({"ambiente":"2"}) las comillas
+    // internas rompen el argumento y el JSON llega corrupto al JAR — por eso
+    // el parámetro llegaba null y el reporte explotaba (y LOGO_URL nunca
+    // habría funcionado). Con execFile no hay interpretación de shell.
+    const classPath = join(getKudePkgPath(), 'jasperLibs') + '/';
+    const jarFile = join(getKudePkgPath(), 'CreateKude.jar');
+    await execFileAsync(
+      env.JAVA_PATH,
+      [
+        '-Dfile.encoding=IBM850',
+        '-classpath',
+        classPath,
+        '-jar',
+        jarFile,
+        xmlPath,
+        srcJasper,
+        destFolder,
+        jsonParam,
+      ],
+      { maxBuffer: 1024 * 1024 * 8 },
+    );
 
     // El JAR nombra el PDF a su gusto (observado en vivo:
     // "Factura electrónica_18260177-001-002-0000614.pdf" — con espacio y

@@ -108,10 +108,14 @@ export const tenantRoutes: FastifyPluginAsyncZod = async (app) => {
           nombreFantasia: z.string().optional(),
           timbradoNumero: z.string().min(1),
           timbradoFecha: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+          // DEPRECADO: el timbrado electrónico no vence (dFeFinT está
+          // comentado en el XSD v150). Se acepta por compatibilidad con
+          // integraciones que vienen del régimen preimpreso; no se usa.
           timbradoVencimiento: z
             .string()
             .regex(/^\d{4}-\d{2}-\d{2}$/)
-            .optional(),
+            .optional()
+            .describe('DEPRECADO — el timbrado electrónico no tiene fecha de fin de vigencia'),
           tipoContribuyente: z.number().int().min(1).max(2),
           tipoRegimen: z.number().int().min(1).max(15),
           establecimientos: z.array(establecimientoSchema).min(1),
@@ -430,34 +434,28 @@ export const tenantRoutes: FastifyPluginAsyncZod = async (app) => {
             : problemasEmisor.join('; '),
       });
 
-      // 3b. Timbrado: vencimiento cargado y no vencido. Sin este dato nadie
-      //     puede avisar al comercio antes de que se le corte la facturación.
-      const venc = tenant.timbradoVencimiento
+      // 3b. Timbrado: la fecha de INICIO de vigencia debe existir y no ser
+      //     futura. El timbrado electrónico NO vence: el XSD v150 declara
+      //     dNumTim + dFeIniT y tiene dFeFinT COMENTADO — el que vencía era
+      //     el timbrado preimpreso, otro régimen. (Corrección de Punto,
+      //     verificada en xsd-unsigned/DE_v150.xsd, 2026-09-09.)
+      const ini = tenant.timbradoFecha
         ? new Date(
-            typeof tenant.timbradoVencimiento === 'string'
-              ? tenant.timbradoVencimiento
-              : (tenant.timbradoVencimiento as unknown as Date).toISOString(),
+            typeof tenant.timbradoFecha === 'string'
+              ? tenant.timbradoFecha
+              : (tenant.timbradoFecha as unknown as Date).toISOString(),
           )
         : null;
-      if (!venc) {
-        checks.push({
-          check: 'timbrado',
-          ok: false,
-          detail:
-            `timbrado ${tenant.timbradoNumero} sin fecha de vencimiento cargada — ` +
-            'no se puede alertar antes de que venza; cargarla con PATCH /v1/tenants/:id (timbradoVencimiento)',
-        });
-      } else {
-        const diasTimbrado = Math.floor((venc.getTime() - Date.now()) / 86_400_000);
-        checks.push({
-          check: 'timbrado',
-          ok: diasTimbrado > 0,
-          detail:
-            diasTimbrado > 0
-              ? `timbrado ${tenant.timbradoNumero} vigente, vence en ${diasTimbrado} días (${venc.toISOString().slice(0, 10)})`
-              : `timbrado ${tenant.timbradoNumero} VENCIDO el ${venc.toISOString().slice(0, 10)} — SIFEN rechaza toda emisión`,
-        });
-      }
+      const hoy = new Date();
+      checks.push({
+        check: 'timbrado',
+        ok: !!ini && ini.getTime() <= hoy.getTime(),
+        detail: !ini
+          ? `timbrado ${tenant.timbradoNumero} sin fecha de inicio de vigencia`
+          : ini.getTime() > hoy.getTime()
+            ? `timbrado ${tenant.timbradoNumero} con inicio de vigencia FUTURO (${ini.toISOString().slice(0, 10)}) — SIFEN rechaza emitir antes de esa fecha`
+            : `timbrado ${tenant.timbradoNumero} vigente desde ${ini.toISOString().slice(0, 10)}`,
+      });
 
       // 3c. Colisión de talonario: otro tenant ACTIVO con el mismo RUC y
       //     timbrado emitiendo en el mismo punto duplica numeración en SIFEN,
@@ -528,13 +526,10 @@ export const tenantRoutes: FastifyPluginAsyncZod = async (app) => {
       });
 
       // ready = todos los checks críticos ok (numeración es informativa)
-      // `numeracion`, `timbrado` (falta la fecha) y `talonario_exclusivo` son
-      // advertencias operativas: no impiden emitir hoy. Un timbrado VENCIDO sí.
+      // `numeracion` y `talonario_exclusivo` son advertencias operativas:
+      // no impiden emitir hoy.
       const soloAdvertencia = new Set(['numeracion', 'talonario_exclusivo']);
-      const ready = checks
-        .filter((c) => !soloAdvertencia.has(c.check))
-        .filter((c) => !(c.check === 'timbrado' && !venc))
-        .every((c) => c.ok);
+      const ready = checks.filter((c) => !soloAdvertencia.has(c.check)).every((c) => c.ok);
 
       return {
         ready,

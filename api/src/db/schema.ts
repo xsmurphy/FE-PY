@@ -106,6 +106,10 @@ export const tenants = pgTable(
     nombreFantasia: text('nombre_fantasia'),
     timbradoNumero: text('timbrado_numero').notNull(),
     timbradoFecha: date('timbrado_fecha').notNull(),
+    // DEPRECADO: el timbrado ELECTRÓNICO no vence — el XSD v150 tiene
+    // dFeFinT comentado y el DE solo declara dNumTim + dFeIniT. La columna
+    // queda por compatibilidad con integraciones que modelaban el timbrado
+    // preimpreso (otro régimen); NULL es el valor correcto, no un pendiente.
     timbradoVencimiento: date('timbrado_vencimiento'),
     tipoContribuyente: smallint('tipo_contribuyente').notNull(),
     tipoRegimen: smallint('tipo_regimen').notNull(),

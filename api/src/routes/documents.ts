@@ -22,7 +22,8 @@ import { isDocumentCancelled } from '../services/evento.service.js';
 import { decryptCertBundle } from '../services/cert.service.js';
 import { NotFoundError, BadRequestError, SifenError } from '../lib/errors.js';
 import { env } from '../config/env.js';
-import { getPresignedDownloadUrl, getObject } from '../storage/s3.js';
+import { getPresignedDownloadUrl, getObject, uploadObject, storageKey } from '../storage/s3.js';
+import { generateKudePdf } from '../services/kude.service.js';
 
 const require = createRequire(import.meta.url);
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -440,6 +441,82 @@ export const documentRoutes: FastifyPluginAsyncZod = async (app) => {
 
       if (!row) throw new NotFoundError('Document');
       return serializeDocument(await backfillQrUrl(row), true);
+    },
+  );
+
+  // ─────────────────────────────────────────────────────
+  // POST /v1/tenants/:tenant_id/de/:cdc/kude/regenerar
+  //
+  // Rehace el PDF desde el XML firmado que ya está en S3 (no re-emite ni
+  // toca SIFEN: el documento fiscal es el XML, el KUDE es su representación
+  // gráfica). Necesario cuando cambia el renderizado — p.ej. el banner de
+  // ambiente o el logo del emisor.
+  // ─────────────────────────────────────────────────────
+  app.post(
+    '/tenants/:tenant_id/de/:cdc/kude/regenerar',
+    {
+      preHandler: [requireAuth, requireTenantScope],
+      schema: {
+        tags: ['documents'],
+        summary: 'Regenerar el KUDE (PDF) de un documento ya emitido',
+        security: [{ bearerAuth: [] }],
+        params: z.object({
+          tenant_id: z.string().uuid(),
+          cdc: z.string().length(44),
+        }),
+        response: {
+          200: z.object({
+            cdc: z.string(),
+            regenerado: z.boolean(),
+            kudeUrl: z.string().nullable(),
+            motivo: z.string().optional(),
+          }),
+        },
+      },
+    },
+    async (request) => {
+      const [row] = await db
+        .select()
+        .from(documents)
+        .where(
+          and(
+            eq(documents.companyId, request.company!.id),
+            eq(documents.tenantId, request.tenant!.id),
+            eq(documents.cdc, request.params.cdc),
+          ),
+        )
+        .limit(1);
+      if (!row) throw new NotFoundError('Document');
+      if (!row.xmlStorageKey) {
+        throw new BadRequestError('El documento no tiene XML firmado persistido');
+      }
+
+      const xml = (await getObject(row.xmlStorageKey)).toString('utf8');
+      const result = await generateKudePdf(xml, {
+        logoUrl: request.tenant!.logoUrl,
+        env: request.tenant!.env,
+      });
+      if (!result.ok || !result.pdfBuffer) {
+        return {
+          cdc: row.cdc!,
+          regenerado: false,
+          kudeUrl: null,
+          motivo: result.reason ?? 'No se pudo generar el KUDE',
+        };
+      }
+
+      const kudeKey = storageKey.kude(request.company!.id, request.tenant!.id, row.cdc!);
+      await uploadObject(kudeKey, result.pdfBuffer, { contentType: 'application/pdf' });
+      await db
+        .update(documents)
+        .set({ kudeStorageKey: kudeKey, updatedAt: new Date() })
+        .where(eq(documents.id, row.id));
+
+      return {
+        cdc: row.cdc!,
+        regenerado: true,
+        kudeUrl: await getPresignedDownloadUrl(kudeKey, 900).catch(() => null),
+      };
     },
   );
 

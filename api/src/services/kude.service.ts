@@ -86,9 +86,22 @@ export interface KudeResult {
  * Retorna {ok: false} si ENABLE_KUDE=false o si el paquete/Java no está
  * disponible — el caller debe tratar esto como opcional, no como error.
  */
+/**
+ * Valor del parámetro `ambiente` del template Jasper. Lógica del .jasper
+ * (verificada decompilando el template):
+ *   "0" → imprime "Factura generada en Ambiente NO CONECTADO a la SET"
+ *   "1" → imprime "Factura generada en Ambiente de PRUEBA de la SET"
+ *   otro → sin banner (documento de producción)
+ *
+ * El DEFAULT del template es "0": no pasar el parámetro imprimía
+ * "NO CONECTADO a la SET" en KUDEs de documentos REALES aprobados por SIFEN
+ * (bug reportado por Punto, 2026-09-09). Siempre pasarlo explícitamente.
+ */
+const ambienteParam = (env: 'test' | 'prod'): string => (env === 'prod' ? '2' : '1');
+
 export const generateKudePdf = async (
   xmlSigned: string,
-  options: { logoUrl?: string | null } = {},
+  options: { logoUrl?: string | null; env?: 'test' | 'prod' } = {},
 ): Promise<KudeResult> => {
   if (!env.ENABLE_KUDE) {
     return { ok: false, reason: 'ENABLE_KUDE=false' };
@@ -121,7 +134,10 @@ export const generateKudePdf = async (
     const destFolder = tmpDir + '/';
     // LOGO_URL es el parámetro que expone el template Jasper para el logo
     // del contribuyente (verificado en los .jasper bundleados).
-    const jsonParam = JSON.stringify(options.logoUrl ? { LOGO_URL: options.logoUrl } : {});
+    const jsonParam = JSON.stringify({
+      ambiente: ambienteParam(options.env ?? 'prod'),
+      ...(options.logoUrl ? { LOGO_URL: options.logoUrl } : {}),
+    });
 
     // Llamamos directamente al inner API (5 params) en vez del wrapper roto
     await KUDEGen.generateKUDE(env.JAVA_PATH, xmlPath, srcJasper, destFolder, jsonParam);

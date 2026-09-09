@@ -30,7 +30,13 @@ const establecimientoSchema = z.object({
   distritoDescripcion: z.string(),
   ciudad: z.number().int().positive(),
   ciudadDescripcion: z.string(),
-  telefono: z.string().optional(),
+  // OBLIGATORIO: SIFEN exige dTelEmi de 6 a 15 caracteres. Dejarlo opcional
+  // permitía crear un tenant que fallaba en TODA emisión con
+  // "dTelEmi: minLength 6" (caso real Balloon Party, 2026-09-09).
+  telefono: z
+    .string()
+    .min(6, 'El teléfono del establecimiento debe tener al menos 6 caracteres (SIFEN dTelEmi)')
+    .max(15),
   email: z.string().email().optional(),
   denominacion: z.string().optional(),
 });
@@ -384,7 +390,32 @@ export const tenantRoutes: FastifyPluginAsyncZod = async (app) => {
         detail: rucCheck.valid ? tenant.ruc : rucCheck.error!,
       });
 
-      // 3. Certificado cargado, no revocado, vigente
+      // 3. Datos del emisor que SIFEN valida en el XML (no basta con que la
+      //    fila exista: un establecimiento sin teléfono rompe TODA emisión)
+      const establecimientos = (tenant.establecimientos ?? []) as Array<{
+        codigo: string;
+        telefono?: string;
+        direccion?: string;
+      }>;
+      const sinTelefono = establecimientos.filter((e) => (e.telefono ?? '').trim().length < 6);
+      const sinDireccion = establecimientos.filter((e) => (e.direccion ?? '').trim().length === 0);
+      const problemasEmisor = [
+        ...sinTelefono.map(
+          (e) =>
+            `establecimiento ${e.codigo}: teléfono ausente o menor a 6 caracteres (SIFEN dTelEmi) — corregir con PATCH /v1/tenants/:id`,
+        ),
+        ...sinDireccion.map((e) => `establecimiento ${e.codigo}: dirección vacía`),
+      ];
+      checks.push({
+        check: 'datos_emisor',
+        ok: problemasEmisor.length === 0,
+        detail:
+          problemasEmisor.length === 0
+            ? `${establecimientos.length} establecimiento(s) con datos completos`
+            : problemasEmisor.join('; '),
+      });
+
+      // 4. Certificado cargado, no revocado, vigente
       const [cert] = await db
         .select({ revokedAt: tenantCerts.revokedAt, notAfter: tenantCerts.notAfter })
         .from(tenantCerts)

@@ -286,6 +286,49 @@ Mismo shape que la respuesta del POST (con presigned URLs frescas).
 `POST /de/:cdc/consulta` re-consulta SIFEN y devuelve el mismo shape
 actualizado. `GET /de/:cdc/xml` = XML crudo; `/kude` = PDF.
 
+### Reconciliación — cuando se perdió la respuesta del POST
+
+Dos consultas para recuperar un documento sin depender del CDC. Existen
+porque un documento que falló antes de generar el CDC, o cuya respuesta
+HTTP se perdió, sería inconsultable de otro modo.
+
+**`GET /v1/tenants/:id/de/txn/:txn_id`** — el `txnId` (uuid) viene en el
+201 del POST **siempre**, incluso cuando el documento termina en `error`
+sin CDC. Devuelve el mismo shape que el detalle por CDC. Si el ERP persiste
+`txnId` en la misma transacción en la que marca el documento como emitido,
+ningún documento queda huérfano: la recuperación es una lectura directa.
+
+**`GET /v1/tenants/:id/de/numero/:est/:punto/:numero?tipoDocumento=1`** —
+fallback para cuando se perdió la respuesta entera y no hay ni `txnId`.
+
+```json
+{
+  "vigente": { /* shape completo del detalle, o null */ },
+  "intentos": [ /* TODAS las filas de ese número, más nueva primero,
+                   cada una con estado y errorMessage */ ]
+}
+```
+
+`vigente` es el documento con efecto fiscal: excluye `rechazado` y `error`.
+No hace falta filtrar del lado del ERP — el índice único parcial garantiza
+que haya **a lo sumo una** fila activa en ese scope. Si `vigente` es
+`null`, no hay documento vigente y se puede reemitir sin riesgo de doble
+emisión.
+
+**Mandá siempre `tipoDocumento`.** El índice incluye `tipo`, así que una FE
+y una NC con el mismo número pueden estar ambas activas legítimamente; sin
+el query param la consulta cruza tipos y `vigente` sería la más reciente de
+las dos. Con el param el resultado es unívoco.
+
+Ambas consultas son estrictamente por tenant (filtran `company_id` +
+`tenant_id` de la ruta). No cruzan tenants aunque compartan RUC, y es lo
+correcto: el número es único dentro de `(timbrado, establecimiento, punto)`
+y el timbrado cuelga del tenant.
+
+Nota: `kudeUrl` y `xmlUrl` son presigned de S3 con 15 minutos de vida. No
+los persistas — guardá el CDC y re-consultá. `qrUrl` sí es estable (sale
+del XML firmado) y es el que va impreso en el ticket.
+
 ### POST /v1/tenants/:id/eventos/cancelacion
 
 ```json
@@ -334,12 +377,68 @@ SIFEN 48h. `GET /eventos?cdc=` lista eventos.
 8. **CSC obligatorio para el QR**: sin CSC no hay QR y SIFEN rechaza. Se
    generan en eKuatia y COEXISTEN (crear uno nuevo no rompe el del proveedor
    anterior del cliente).
-9. **Un DE rechazado deja fila local** con ese número; el API aún no
-   auto-reusa el número (fix pendiente). Si un cliente ve "duplicate key"
-   tras un rechazo, es eso.
-10. **Puntos de expedición**: usar un punto distinto al del sistema FE
+9. **Un DE rechazado deja fila local con ese número, pero el número SE
+   REUSA**. El índice único es parcial —
+   `UNIQUE (tenant_id, tipo, establecimiento, punto, numero) WHERE estado
+   NOT IN ('rechazado','error')` — así que reintentar con el mismo número
+   tras un rechazo es correcto y esperado. Si ves 409 "Ya existe un
+   documento activo con ese número", significa que hay una fila **activa**
+   (aprobada o en curso) con ese número: no reintentes, consultá.
+10. **Un documento RECHAZADO tiene CDC y tiene QR.** El CDC lo calcula el
+    motor al generar el XML, y el QR se genera después de firmar pero ANTES
+    de enviar a SIFEN. O sea que ambos campos vienen poblados en un rechazo
+    y **ninguno de los dos sirve para decidir si el documento vale**. La
+    única señal de validez fiscal es:
+
+    ```
+    estado === "aprobado" && cancelled === false
+    ```
+
+    `cancelled` viene en la misma respuesta y se calcula en vivo contra los
+    eventos de cancelación, así que cubre la factura aprobada y después
+    anulada. Chequear "hay CDC" o "hay QR" antes de imprimir es un bug que
+    termina con un comprobante sin efecto fiscal en manos del comprador.
+11. **Puntos de expedición**: usar un punto distinto al del sistema FE
     anterior del cliente (colisión de correlativo = rechazos en su operación
     actual). Balloon Party: Factomate usa 001-001, FE-PY usa 001-002.
+
+## 5b. Contrato de `Idempotency-Key`
+
+No estaba documentado y Punto lo pidió explícitamente (2026-09-10).
+
+| Regla | Valor |
+|---|---|
+| Largo | mínimo 8, máximo 256 caracteres |
+| Formato | ninguno — cualquier string ASCII en ese rango |
+| Alcance | `(company_id, key)`, no por tenant |
+| TTL | 24h, con GC horario dentro del proceso del API |
+
+Errores: si el largo no entra, o si la misma key vuelve con un cuerpo
+distinto, devolvemos **409** (no 400 ni 422). Es una rareza nuestra —
+reusamos `ConflictError` para todo lo de idempotencia.
+
+Prefijo reservado: **no uses keys que empiecen con `batch-`**.
+`GET /de/batch/{batch_id}` agrupa documentos con
+`documents.idempotency_key LIKE 'batch-<uuid>-%'`; una key con ese prefijo
+aparecería dentro del listado de un lote ajeno.
+
+### Qué garantiza la key, y qué no
+
+La key evita el **trabajo repetido**: mismo cuerpo + misma key dentro de
+las 24h devuelve la respuesta cacheada en vez de re-emitir. Fuera de esa
+ventana, o con el cuerpo cambiado, es una emisión nueva.
+
+Lo que impide el **documento fiscal duplicado** es otra cosa: el índice
+único parcial sobre `(tenant_id, tipo, establecimiento, punto, numero)`
+(ver gotcha 9). Lo aplica Postgres, así que aguanta una carrera entre dos
+workers del ERP. Si el ERP asigna sus propios números, esa es la invariante
+en la que conviene apoyarse; la idempotency-key es una optimización.
+
+Corolario para quien derive la key del hash del cuerpo: al cambiar el
+cuerpo cambia la key, y con eso se pierde el replay entre versiones del
+payload. Es una decisión válida —evita el 409 permanente si un deploy
+altera el payload de un reintento— pero mueve la garantía a un paso del
+integrador: consultar por `txnId` o por número **antes** de reemitir.
 
 ## 6. Nota de Remisión Electrónica (tipoDocumento=7)
 

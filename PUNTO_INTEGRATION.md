@@ -340,3 +340,183 @@ SIFEN 48h. `GET /eventos?cdc=` lista eventos.
 10. **Puntos de expedición**: usar un punto distinto al del sistema FE
     anterior del cliente (colisión de correlativo = rechazos en su operación
     actual). Balloon Party: Factomate usa 001-001, FE-PY usa 001-002.
+
+## 6. Nota de Remisión Electrónica (tipoDocumento=7)
+
+Documento fiscal que ampara el **TRASLADO** de mercadería, no una venta. No
+lleva precios, IVA ni totales — `montoTotal` vuelve en `"0"` en la respuesta
+y eso es correcto, no un bug.
+
+Se emite por el **mismo** endpoint que la factura: `POST
+/v1/tenants/:id/de` con `tipoDocumento: 7`. No hay endpoint aparte.
+
+Diferencias explícitas con la factura (rompen si asumís el shape de la
+sección 4):
+
+- **NO lleva** `tipoTransaccion`, `moneda` ni `condicion` — si los mandás,
+  el API los ignora: SIFEN no genera el bloque `gOpeCom` para el tipo 7.
+- Los **ítems van sin** `precioUnitario` ni `iva` — solo código, descripción,
+  unidad de medida y cantidad.
+
+### Campos obligatorios
+
+- `remision` (objeto):
+  - `motivo` — ver tabla de motivos más abajo.
+  - `motivoDescripcion` — obligatorio solo si `motivo=99` (Otro).
+  - `tipoResponsable` — quién emite la remisión: 1=Emisor de la factura,
+    2=Poseedor de la factura y bienes, 3=Empresa transportista,
+    4=Despachante de Aduanas, 5=Agente de transporte o intermediario.
+  - `kms` — kilómetros estimados del traslado, número positivo.
+- `detalleTransporte` (objeto):
+  - `tipo` — 1=Propio, 2=Tercero.
+  - `modalidad` — 1=Terrestre, 2=Fluvial, 3=Aéreo, 4=Multimodal.
+  - `tipoResponsable` — **responsable del COSTO DEL FLETE** (iRespFlete),
+    NO confundir con `remision.tipoResponsable`: 1=Emisor de la factura
+    electrónica, 2=Receptor de la factura electrónica, 3=Tercero,
+    4=Agente intermediario del transporte, 5=Transporte propio.
+  - `inicioEstimadoTranslado` / `finEstimadoTranslado` — `yyyy-MM-dd`; fin
+    no puede ser anterior a inicio.
+- `cliente.direccion` + `cliente.numeroCasa` — a dónde va la mercadería.
+
+**Advertencia importante:** `detalleTransporte.tipoResponsable` (iRespFlete)
+es obligatorio por el XSD oficial de SIFEN, pero el motor xmlgen que usa
+FE-PY **no lo valida**. Si falta, el documento no explota acá — pasa la
+generación del XML y recién revienta en la validación XSD, con un error
+prácticamente ilegible para el integrador. FE-PY ahora lo valida ANTES de
+generar el XML y devuelve 422 con mensaje claro (`de-validation.ts`,
+`validarRemision`). Si integrás contra una versión vieja de este API sin
+ese chequeo, agregalo vos del lado del adapter.
+
+### Opcionales
+
+- `detalleTransporte.salida` / `.entrega` — dirección, numeroCasa, ciudad
+  del punto de salida/entrega (además del destino en `cliente`).
+- `detalleTransporte.vehiculo` — tipo, marca, documentoTipo,
+  documentoNumero, numeroMatricula.
+- `detalleTransporte.transportista`.
+- `detalleTransporte.condicionNegociacion` — Incoterm (FOB, CIF, EXW…),
+  3 caracteres.
+- `remision.fechaFactura` — `yyyy-MM-dd`.
+- `remision.costoFlete`.
+- `documentoAsociado`.
+
+### Motivos de remisión (`remision.motivo`)
+
+| Código | Motivo |
+|---|---|
+| 1 | Traslado por ventas |
+| 2 | Traslado por consignación |
+| 3 | Exportación |
+| 4 | Traslado por compra |
+| 5 | Importación |
+| 6 | Traslado por devolución |
+| 7 | Traslado entre locales de la empresa |
+| 8 | Traslado de bienes por transformación |
+| 9 | Traslado de bienes por reparación |
+| 10 | Traslado por emisor móvil |
+| 11 | Exhibición o demostración |
+| 12 | Participación en ferias |
+| 13 | Traslado de encomienda |
+| 14 | Decomiso |
+| 99 | Otro (exige `motivoDescripcion`) |
+
+Regla: `motivo=7` (traslado entre locales de la misma empresa) exige que el
+RUC del receptor (`cliente.ruc`) sea igual al RUC del emisor. FE-PY lo
+valida y devuelve 422 si no coincide.
+
+### Ejemplo curl completo
+
+```bash
+curl -X POST https://fepy.punto.la/v1/tenants/01a07dc9-96bb-756e-a1fc-d89f0e0e2bda/de \
+  -H "authorization: Bearer cmp_xxxxxxxxxxxxxxxx" \
+  -H "content-type: application/json" \
+  -H "idempotency-key: $(uuidgen)" \
+  -d '{
+    "tipoDocumento": 7,
+    "establecimiento": "001",
+    "punto": "002",
+    "cliente": {
+      "contribuyente": true,
+      "ruc": "7659394-0",
+      "razonSocial": "MURPHY CHRISTIAN",
+      "nombreFantasia": "MURPHY CHRISTIAN",
+      "tipoOperacion": 1,
+      "direccion": "Ruta 2 km 15",
+      "numeroCasa": "0",
+      "ciudad": 2226,
+      "pais": "PRY",
+      "paisDescripcion": "Paraguay",
+      "tipoContribuyente": 1,
+      "documentoTipo": 1,
+      "documentoNumero": "7659394",
+      "telefono": "0994285744",
+      "email": "cliente@example.com"
+    },
+    "usuario": {
+      "documentoTipo": 1,
+      "documentoNumero": "157264",
+      "nombre": "Cintia Gonzalez",
+      "cargo": "Encargada de depósito"
+    },
+    "remision": {
+      "motivo": 1,
+      "tipoResponsable": 1,
+      "kms": 32
+    },
+    "detalleTransporte": {
+      "tipo": 1,
+      "modalidad": 1,
+      "tipoResponsable": 1,
+      "inicioEstimadoTranslado": "2026-09-10",
+      "finEstimadoTranslado": "2026-09-11",
+      "entrega": {
+        "direccion": "Ruta 2 km 15",
+        "numeroCasa": "0",
+        "ciudad": 2226
+      }
+    },
+    "items": [
+      {
+        "codigo": "GL-001",
+        "descripcion": "Globo de latex",
+        "unidadMedida": 77,
+        "cantidad": 500
+      }
+    ]
+  }'
+```
+
+Nótese `cliente` sin `distrito`/`departamento`/descripciones: alcanza con
+`ciudad` (código 2226 = Encarnación), el API deriva el resto (ver sección 7).
+
+### Estado honesto
+
+La remisión está validada contra el XSD oficial de SIFEN con tests
+automatizados (`api/test/services/remision-xml.test.ts`,
+`api/test/lib/de-validation.test.ts`). **Todavía no se emitió ninguna
+remisión contra SIFEN producción** — a diferencia de la factura (sección
+1), esto no está probado en vivo. No lo asumas listo para producción sin
+un piloto real.
+
+## 7. Catálogo geográfico (`/v1/geo/*`)
+
+La dirección del receptor (y la de salida/entrega de una remisión) se
+informa con **códigos** de ciudad, distrito y departamento, no con
+nombres. Para evitarle al integrador hardcodear las ~6.766 ciudades de
+SIFEN o adivinar un código, FE-PY expone:
+
+- `GET /v1/geo/ciudades?q=<nombre>&limit=20` — busca por nombre parcial
+  (mínimo 2 caracteres), devuelve el trío ciudad/distrito/departamento con
+  descripciones.
+- `GET /v1/geo/ciudades/{codigo}` — resuelve un código de ciudad conocido a
+  su distrito y departamento.
+- `GET /v1/geo/departamentos` — los 18 departamentos del país.
+
+Los tres requieren `authorization: Bearer <apiKey>` pero **no** scope de
+tenant (son catálogo, no datos de nadie).
+
+**Al emitir alcanza con mandar `ciudad`** en `cliente`,
+`detalleTransporte.salida` o `detalleTransporte.entrega` — el API deriva
+`distrito`, `departamento` y sus descripciones automáticamente si no los
+mandás. Esto aplica también a la **factura**, no solo a la remisión (mismo
+mecanismo, `completarUbicacion` en `api/src/lib/geo.ts`).

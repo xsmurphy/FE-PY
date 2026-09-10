@@ -71,6 +71,27 @@ const itemSchema = z.object({
   iva: z.union([z.literal(0), z.literal(5), z.literal(10)]).default(10).describe('Tasa de IVA: 0 (exenta), 5 o 10'),
 });
 
+const itemRemisionSchema = z.object({
+  codigo: z.string().describe('Código interno del producto, ej "A-001"'),
+  descripcion: z.string().describe('Qué mercadería se traslada'),
+  cantidad: z.number().positive(),
+});
+
+// La Nota de Remisión NO lleva precios ni IVA: solo qué y cuánto se mueve.
+const buildItemsRemision = (items) =>
+  items.map((i) => ({
+    codigo: i.codigo,
+    descripcion: i.descripcion,
+    unidadMedida: 77,
+    cantidad: i.cantidad,
+  }));
+
+const ubicacionSchema = z.object({
+  direccion: z.string().min(1).max(255),
+  numeroCasa: z.string().regex(/^\d{1,6}$/).default('0'),
+  ciudad: z.number().int().positive().describe('Código de ciudad SIFEN — obtenerlo con buscar_ciudad'),
+});
+
 const creditoSchema = z
   .object({
     plazo: z.string().min(2).max(15).optional().describe('Plazo del crédito, ej "30 días" (2-15 caracteres). Default "30 días" si no hay cuotas.'),
@@ -302,6 +323,13 @@ FLUJO OBLIGATORIO PARA EMITIR (ejemplo: el usuario dice "hacé factura al RUC 76
    - "pendiente" → SIFEN aún procesa; re-consultá con consultar_documento en ~1 min.
 5. Devoluciones/correcciones sobre una factura aprobada → emitir_nota_credito (mismo receptor, identificado — una factura innominada no acepta NC). Anulación total dentro de las 48h → cancelar_documento (también requiere confirmación explícita del usuario).
 6. Si algo falla al arrancar, diagnosticá con estado_tenant (cert/CSC/numeración).
+
+NOTA DE REMISIÓN (traslado de mercadería, NO es una venta):
+- Usarla cuando el usuario pide "remisión", "nota de remisión", "traslado", "envío de mercadería" — no lleva precios, IVA ni totales, solo qué y cuánto se mueve.
+- Antes de armarla necesitás el CÓDIGO de ciudad del destino (y del origen, si se informa): conseguilo con buscar_ciudad. Nunca inventes un código.
+- Datos que hay que pedirle al usuario si no los dio: destino (dirección + número + ciudad), motivo del traslado, kilómetros estimados, fechas de inicio y fin del traslado. El vehículo es opcional pero conviene si viaja en camión propio.
+- Flujo idéntico al de la factura: previsualizar_remision → mostrar la vista previa → confirmación explícita → emitir_remision. El KUDE aprobado debe viajar con la carga.
+- motivo=7 (traslado entre locales propios) exige que el destinatario sea el MISMO RUC que el emisor.
 
 REGLAS:
 - Nunca inventes RUC, razón social ni precios: pedilos al usuario o verificalos con consultar_ruc.
@@ -623,6 +651,202 @@ server.tool(
       };
       const r = await api('POST', `/tenants/${tenantOf(args)}/de`, body);
       return ok(resumen(r));
+    } catch (e) {
+      return fail(e);
+    }
+  },
+);
+
+const MOTIVOS_REMISION = {
+  1: 'Traslado por ventas',
+  2: 'Traslado por consignación',
+  3: 'Exportación',
+  4: 'Traslado por compra',
+  5: 'Importación',
+  6: 'Traslado por devolución',
+  7: 'Traslado entre locales de la empresa',
+  8: 'Traslado de bienes por transformación',
+  9: 'Traslado de bienes por reparación',
+  10: 'Traslado por emisor móvil',
+  11: 'Exhibición o demostración',
+  12: 'Participación en ferias',
+  13: 'Traslado de encomienda',
+  14: 'Decomiso',
+  99: 'Otro',
+};
+
+const remisionArgs = {
+  tenant_id: tenantIdSchema,
+  establecimiento: z.string().regex(/^\d{1,3}$/).optional().describe('Default: env FEPY_ESTABLECIMIENTO'),
+  punto: z.string().regex(/^\d{1,3}$/).optional().describe('Default: env FEPY_PUNTO'),
+  items: z.array(itemRemisionSchema).min(1).describe('Mercadería trasladada, SIN precios'),
+  cliente: clienteSchema.describe('Destinatario de la mercadería'),
+  motivo: z.number().int().default(1)
+    .describe('1=Venta, 2=Consignación, 3=Exportación, 4=Compra, 5=Importación, 6=Devolución, 7=Entre locales propios, 8=Transformación, 9=Reparación, 10=Emisor móvil, 11=Exhibición, 12=Feria, 13=Encomienda, 14=Decomiso, 99=Otro'),
+  motivoDescripcion: z.string().max(60).optional().describe('Obligatorio si motivo=99'),
+  destino: ubicacionSchema.describe('A dónde va la mercadería (obligatorio en una remisión)'),
+  origen: ubicacionSchema.optional().describe('Desde dónde sale; si se omite no se informa el local de salida'),
+  kms: z.number().positive().describe('Kilómetros estimados del traslado'),
+  inicioTraslado: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe('Fecha estimada de inicio, yyyy-MM-dd'),
+  finTraslado: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe('Fecha estimada de fin, yyyy-MM-dd'),
+  transporte: z.enum(['propio', 'tercero']).default('propio'),
+  modalidad: z.number().int().min(1).max(4).default(1).describe('1=Terrestre, 2=Fluvial, 3=Aéreo, 4=Multimodal'),
+  responsableFlete: z.number().int().min(1).max(5).default(1)
+    .describe('Quién paga el flete: 1=Emisor, 2=Receptor, 3=Tercero, 4=Agente intermediario, 5=Transporte propio'),
+  vehiculo: z
+    .object({
+      tipo: z.string().min(4).max(10).describe('CAMION, CAMIONETA, FURGON…'),
+      marca: z.string().min(1).max(10),
+      numeroMatricula: z.string().max(15).optional().describe('Chapa del vehículo'),
+    })
+    .optional(),
+};
+
+// El cuerpo del DE tipo 7 es el mismo para previsualizar y emitir — se
+// arma una sola vez para que la vista previa no pueda divergir de lo que
+// termina firmado.
+const buildRemisionBody = (args) => {
+  const { establecimiento, punto } = estPunto(args);
+  return {
+    tipoDocumento: 7,
+    establecimiento,
+    punto,
+    tipoEmision: 1,
+    descripcion: MOTIVOS_REMISION[args.motivo] ?? 'Traslado de mercadería',
+    cliente: (() => {
+      // buildCliente trae Asunción por defecto; en una remisión la dirección
+      // del receptor ES el destino de la carga, así que la pisamos entera y
+      // dejamos que el API derive distrito/departamento desde la ciudad.
+      const base = buildCliente(args.cliente);
+      delete base.distrito;
+      delete base.departamento;
+      delete base.ciudadDescripcion;
+      delete base.distritoDescripcion;
+      delete base.departamentoDescripcion;
+      return {
+        ...base,
+        direccion: args.destino.direccion,
+        numeroCasa: args.destino.numeroCasa,
+        ciudad: args.destino.ciudad,
+      };
+    })(),
+    remision: {
+      motivo: args.motivo,
+      ...(args.motivoDescripcion ? { motivoDescripcion: args.motivoDescripcion } : {}),
+      tipoResponsable: 1,
+      kms: args.kms,
+    },
+    detalleTransporte: {
+      tipo: args.transporte === 'tercero' ? 2 : 1,
+      modalidad: args.modalidad,
+      tipoResponsable: args.responsableFlete,
+      inicioEstimadoTranslado: args.inicioTraslado,
+      finEstimadoTranslado: args.finTraslado,
+      ...(args.origen ? { salida: args.origen } : {}),
+      entrega: args.destino,
+      ...(args.vehiculo
+        ? {
+            vehiculo: {
+              tipo: args.vehiculo.tipo,
+              marca: args.vehiculo.marca,
+              documentoTipo: 1,
+              documentoNumero: args.vehiculo.numeroMatricula ?? 'SIN DATO',
+              ...(args.vehiculo.numeroMatricula ? { numeroMatricula: args.vehiculo.numeroMatricula } : {}),
+            },
+          }
+        : {}),
+    },
+    items: buildItemsRemision(args.items),
+  };
+};
+
+server.tool(
+  'buscar_ciudad',
+  'Busca el código de ciudad de SIFEN por nombre. Necesario para armar direcciones de una ' +
+    'Nota de Remisión: el documento se informa con códigos, no con nombres. Devuelve también ' +
+    'el distrito y departamento correspondientes.',
+  { tenant_id: tenantIdSchema, nombre: z.string().min(2).describe('Parte del nombre, ej "ciudad del este"') },
+  async (args) => {
+    try {
+      const r = await api('GET', `/geo/ciudades?q=${encodeURIComponent(args.nombre)}&limit=10`);
+      return ok(r);
+    } catch (e) {
+      return fail(e);
+    }
+  },
+);
+
+server.tool(
+  'previsualizar_remision',
+  'PASO OBLIGATORIO antes de emitir una Nota de Remisión: arma la vista previa resolviendo el ' +
+    'destinatario contra el padrón de SIFEN. Mostrá el bloque "Vista Previa" TAL CUAL al usuario y ' +
+    'preguntale "¿Confirmás emitir la remisión?". Solo si confirma, llamá emitir_remision con los ' +
+    'argumentosParaEmitir devueltos.',
+  remisionArgs,
+  async (args) => {
+    try {
+      const tenantId = tenantOf(args);
+      const { establecimiento, punto } = estPunto(args);
+      const receptor = await resolverReceptor(tenantId, args.cliente);
+      const lineas = args.items
+        .map((i, n) => `${n + 1} - ${i.descripcion} x${i.cantidad}`)
+        .join('\n');
+      const preview = [
+        'Vista Previa — Nota de Remisión',
+        '-------------------------',
+        `${receptor.tipo}: ${receptor.documento}`,
+        `Destinatario: ${receptor.nombre}`,
+        `Destino: ${args.destino.direccion} ${args.destino.numeroCasa}`,
+        ...(args.origen ? [`Origen: ${args.origen.direccion} ${args.origen.numeroCasa}`] : []),
+        lineas,
+        `Motivo: ${MOTIVOS_REMISION[args.motivo] ?? args.motivo} — ${args.kms} km`,
+        `Traslado: ${args.inicioTraslado} a ${args.finTraslado} — transporte ${args.transporte}`,
+        `Punto de emisión: ${establecimiento}-${punto}`,
+        '-------------------------',
+        'La remisión no lleva importes: ampara el traslado, no la venta.',
+        '',
+        '¿Confirmás emitir la remisión?',
+      ].join('\n');
+      return ok({
+        preview,
+        ...(receptor.nota ? { nota: receptor.nota } : {}),
+        argumentosParaEmitir: { ...args, establecimiento, punto, cliente: receptor.cliente },
+      });
+    } catch (e) {
+      return fail(e);
+    }
+  },
+);
+
+server.tool(
+  'emitir_remision',
+  'Emite una NOTA DE REMISIÓN ELECTRÓNICA (documento fiscal REAL que ampara el traslado de ' +
+    'mercadería, no una venta: no lleva precios, IVA ni totales). Llamar SOLO después de que ' +
+    'previsualizar_remision fue mostrada al usuario y el usuario CONFIRMÓ explícitamente. ' +
+    'Si el estado es "aprobado", devuelve el KUDE en PDF para que viaje con la carga.',
+  { ...remisionArgs, numero: z.number().int().min(1).max(9999999).optional()
+      .describe('Número explícito (modo numeración-del-ERP). Omitir para numeración automática.') },
+  async (args) => {
+    try {
+      const body = buildRemisionBody(args);
+      if (args.numero != null) body.numero = String(args.numero);
+      const r = await api('POST', `/tenants/${tenantOf(args)}/de`, body);
+      const content = [{ type: 'text', text: JSON.stringify(resumen(r), null, 2) }];
+      if (r.estado === 'aprobado' && r.kudeUrl) {
+        try {
+          const pdf = await fetch(r.kudeUrl);
+          if (pdf.ok) {
+            const blob = Buffer.from(await pdf.arrayBuffer()).toString('base64');
+            content.push({
+              type: 'resource',
+              resource: { uri: `fepy://kude/${r.cdc}.pdf`, mimeType: 'application/pdf', blob },
+            });
+          }
+        } catch {
+          // el link kudeUrl del resumen sigue disponible
+        }
+      }
+      return { content };
     } catch (e) {
       return fail(e);
     }

@@ -202,6 +202,7 @@ const HTML = String.raw`<!doctype html>
       <div class="tab-list">
         <div class="tab active" onclick="tab('factura')">Factura</div>
         <div class="tab" onclick="tab('nc')">Nota Crédito</div>
+        <div class="tab" onclick="tab('nr')">Remisión</div>
         <div class="tab" onclick="tab('events')">Eventos</div>
         <div class="tab" onclick="tab('list')">Listar DEs</div>
       </div>
@@ -249,6 +250,53 @@ const HTML = String.raw`<!doctype html>
           <label><span>Monto</span><input id="nc-monto" type="number" value="150000"></label>
         </div>
         <button onclick="emit(5)">Emitir Nota Crédito (tipo 5)</button>
+      </div>
+
+      <div id="tab-nr" class="tab-content">
+        <div class="row3">
+          <label><span>Establecimiento</span><input id="nr-est" value="001"></label>
+          <label><span>Punto</span><input id="nr-punto" value="002"></label>
+          <label><span>Motivo</span>
+            <select id="nr-motivo">
+              <option value="1" selected>1 - Traslado por ventas</option>
+              <option value="2">2 - Consignación</option>
+              <option value="3">3 - Exportación</option>
+              <option value="4">4 - Compra</option>
+              <option value="5">5 - Importación</option>
+              <option value="6">6 - Devolución</option>
+              <option value="7">7 - Entre locales de la empresa</option>
+              <option value="8">8 - Transformación</option>
+              <option value="9">9 - Reparación</option>
+              <option value="10">10 - Emisor móvil</option>
+              <option value="11">11 - Exhibición</option>
+              <option value="12">12 - Feria</option>
+              <option value="13">13 - Encomienda</option>
+              <option value="14">14 - Decomiso</option>
+              <option value="99">99 - Otro</option>
+            </select>
+          </label>
+        </div>
+        <h3>Item (sin precio ni IVA — la remisión ampara traslado, no venta)</h3>
+        <div class="row">
+          <label><span>Descripción</span><input id="nr-desc" value="Mercadería en traslado"></label>
+          <label><span>Cantidad</span><input id="nr-cant" type="number" value="1" step="0.01"></label>
+        </div>
+        <h3>Transporte</h3>
+        <div class="row3">
+          <label><span>Km estimados</span><input id="nr-kms" type="number" value="10"></label>
+          <label><span>Inicio traslado</span><input id="nr-inicio" type="date"></label>
+          <label><span>Fin traslado</span><input id="nr-fin" type="date"></label>
+        </div>
+        <h3>Destino (a dónde va la mercadería)</h3>
+        <div class="row3">
+          <label><span>Dirección</span><input id="nr-dest-dir" value="Ruta 2 km 15"></label>
+          <label><span>Número casa</span><input id="nr-dest-nro" value="0"></label>
+          <label><span>Ciudad (código, 1 = Asunción)</span><input id="nr-dest-ciudad" type="number" value="1"></label>
+        </div>
+        <label><span>Buscar código de ciudad por nombre</span><input id="nr-ciudad-q" placeholder="ej: encarnacion"></label>
+        <button class="secondary small" onclick="buscarCiudad()">Buscar ciudad</button>
+        <div class="note">Motivo 7 (entre locales) exige que el RUC del receptor sea igual al del emisor.</div>
+        <button onclick="emit(7)">Emitir Remisión (tipo 7)</button>
       </div>
 
       <div id="tab-events" class="tab-content">
@@ -523,9 +571,60 @@ async function emit(tipoDocumento) {
         tipo: 1,
       },
     };
+  } else if (tipoDocumento === 7) {
+    // Nota de remisión: ampara TRASLADO, no venta — sin tipoTransaccion,
+    // moneda, condicion, ni precio/IVA en los ítems. El destino pisa la
+    // dirección del cliente; borramos distrito/departamento/descripciones
+    // para que el API los derive de la ciudad (ver /v1/geo/ciudades).
+    const cliente = buildClienteFromForm();
+    cliente.direccion = document.getElementById('nr-dest-dir').value;
+    cliente.numeroCasa = document.getElementById('nr-dest-nro').value;
+    cliente.ciudad = Number(document.getElementById('nr-dest-ciudad').value);
+    delete cliente.distrito;
+    delete cliente.departamento;
+    delete cliente.distritoDescripcion;
+    delete cliente.departamentoDescripcion;
+    delete cliente.ciudadDescripcion;
+
+    body = {
+      tipoDocumento: 7,
+      establecimiento: document.getElementById('nr-est').value,
+      punto: document.getElementById('nr-punto').value,
+      cliente,
+      usuario: { documentoTipo: 1, documentoNumero: '157264', nombre: 'Operador Test', cargo: 'Vendedor' },
+      remision: {
+        motivo: Number(document.getElementById('nr-motivo').value),
+        tipoResponsable: 1,
+        kms: Number(document.getElementById('nr-kms').value),
+      },
+      detalleTransporte: {
+        tipo: 1,
+        modalidad: 1,
+        tipoResponsable: 1,
+        inicioEstimadoTranslado: document.getElementById('nr-inicio').value,
+        finEstimadoTranslado: document.getElementById('nr-fin').value,
+        entrega: {
+          direccion: document.getElementById('nr-dest-dir').value,
+          numeroCasa: document.getElementById('nr-dest-nro').value,
+          ciudad: Number(document.getElementById('nr-dest-ciudad').value),
+        },
+      },
+      items: [{
+        codigo: 'NR-001',
+        descripcion: document.getElementById('nr-desc').value,
+        unidadMedida: 77,
+        cantidad: Number(document.getElementById('nr-cant').value),
+      }],
+    };
   }
 
   await apiCall('POST', '/v1/tenants/' + state.tenantId + '/de', body, { idempotencyKey: uuidKey() });
+}
+
+async function buscarCiudad() {
+  const q = document.getElementById('nr-ciudad-q').value;
+  if (!q) return showResult('err', 'n/a', 'local', 'Ingresá un texto para buscar (mínimo 2 caracteres)');
+  await apiCall('GET', '/v1/geo/ciudades?q=' + encodeURIComponent(q));
 }
 
 async function cancelar() {

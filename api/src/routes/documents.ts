@@ -38,6 +38,59 @@ const setapi = require('facturacionelectronicapy-setapi').default;
 // solo validamos lo mínimo para poder persistir correctamente.
 // ═════════════════════════════════════════════════════════════════
 
+// ── Nota de Remisión (iTiDE=7) ──────────────────────────────
+// Se describen acá para que aparezcan en el OpenAPI; las reglas
+// condicionales ("obligatorio si tipoDocumento=7") viven en
+// lib/de-validation.ts porque el batch no pasa por este schema.
+
+const ubicacionRemisionSchema = z
+  .object({
+    direccion: z.string().min(1).max(255),
+    numeroCasa: z.union([z.string().regex(/^\d{1,6}$/), z.number().int().nonnegative()]),
+    ciudad: z.coerce.number().int().positive().describe('Código de ciudad SIFEN; distrito y departamento se derivan si no se envían'),
+    distrito: z.coerce.number().int().positive().optional(),
+    departamento: z.coerce.number().int().positive().optional(),
+    telefonoContacto: z.string().min(6).max(15).optional(),
+  })
+  .passthrough();
+
+const detalleTransporteSchema = z
+  .object({
+    tipo: z.coerce.number().int().min(1).max(2).describe('1=Propio, 2=Tercero'),
+    modalidad: z.coerce.number().int().min(1).max(4).describe('1=Terrestre, 2=Fluvial, 3=Aéreo, 4=Multimodal'),
+    tipoResponsable: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(5)
+      .describe(
+        'iRespFlete — responsable del COSTO DEL FLETE. 1=Emisor, 2=Receptor, 3=Tercero, ' +
+          '4=Agente intermediario, 5=Transporte propio',
+      ),
+    condicionNegociacion: z.string().length(3).optional().describe('Incoterm: FOB, CIF, EXW…'),
+    numeroManifiesto: z.string().max(15).optional(),
+    numeroDespachoImportacion: z.string().max(16).optional(),
+    inicioEstimadoTranslado: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe('yyyy-MM-dd'),
+    finEstimadoTranslado: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe('yyyy-MM-dd'),
+    paisDestino: z.string().optional(),
+    salida: ubicacionRemisionSchema.optional().describe('Local de salida de la mercadería'),
+    entrega: ubicacionRemisionSchema.optional().describe('Local de entrega de la mercadería'),
+    vehiculo: z.object({}).passthrough().optional(),
+    transportista: z.object({}).passthrough().optional(),
+  })
+  .passthrough();
+
+const remisionSchema = z
+  .object({
+    motivo: z.coerce.number().int().describe('1=Venta, 2=Consignación, 3=Exportación, 4=Compra, 5=Importación, 6=Devolución, 7=Entre locales, 8=Transformación, 9=Reparación, 10=Emisor móvil, 11=Exhibición, 12=Feria, 13=Encomienda, 14=Decomiso, 99=Otro'),
+    motivoDescripcion: z.string().max(60).optional().describe('Obligatorio si motivo=99'),
+    tipoResponsable: z.coerce.number().int().min(1).max(5).describe('Responsable de la emisión de la NR: 1=Emisor de la factura, 2=Poseedor de factura y bienes, 3=Empresa transportista, 4=Despachante de Aduanas, 5=Agente de transporte'),
+    kms: z.coerce.number().positive().describe('Kilómetros estimados del traslado'),
+    fechaFactura: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    costoFlete: z.coerce.number().nonnegative().optional(),
+  })
+  .passthrough();
+
 const createDeBodySchema = z
   .object({
     tipoDocumento: z
@@ -56,7 +109,8 @@ const createDeBodySchema = z
     codigoSeguridadAleatorio: z.string().regex(/^\d{1,9}$/).optional(),
     fecha: z.string().optional(),
     tipoEmision: z.number().int().min(1).max(2).default(1),
-    tipoTransaccion: z.number().int().min(1).max(15),
+    // Obligatorio salvo en la Nota de Remisión, que no lleva gOpeCom.
+    tipoTransaccion: z.number().int().min(1).max(15).optional(),
     tipoImpuesto: z.number().int().min(1).max(5).default(1),
     moneda: z.string().length(3).default('PYG'),
     descripcion: z.string().optional(),
@@ -65,6 +119,10 @@ const createDeBodySchema = z
     usuario: z.object({}).passthrough().optional(),
     factura: z.object({}).passthrough().optional(),
     condicion: z.object({}).passthrough().optional(),
+    remision: remisionSchema.optional().describe('Obligatorio para tipoDocumento=7'),
+    detalleTransporte: detalleTransporteSchema
+      .optional()
+      .describe('Obligatorio para tipoDocumento=7; opcional en la factura'),
     items: z.array(z.object({}).passthrough()).min(1),
   })
   .passthrough();
@@ -196,10 +254,13 @@ export const documentRoutes: FastifyPluginAsyncZod = async (app) => {
       onSend: [idempotencyPersist],
       schema: {
         tags: ['documents'],
-        summary: 'Emitir un documento electrónico (Factura o Nota de Crédito)',
+        summary: 'Emitir un documento electrónico (FE, Autofactura, NC, ND o Nota de Remisión)',
         description:
           'Genera XML, valida contra XSD, firma y envía a SIFEN (si ENABLE_SIFEN=true). ' +
-          'Requiere header `Idempotency-Key` para evitar duplicados en reintentos.',
+          'Requiere header `Idempotency-Key` para evitar duplicados en reintentos.\n\n' +
+          '**Nota de Remisión (tipoDocumento=7):** no lleva gOpeCom ni totales — ' +
+          '`tipoTransaccion`, `moneda` y `condicion` se ignoran, y los ítems van sin precio ni IVA. ' +
+          'Exige `remision`, `detalleTransporte` y `cliente.direccion` + `cliente.numeroCasa`.',
         security: [{ bearerAuth: [] }],
         params: z.object({ tenant_id: z.string().uuid() }),
         headers: z.object({

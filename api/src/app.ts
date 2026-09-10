@@ -25,6 +25,7 @@ import { documentRoutes } from './routes/documents.js';
 import { eventoRoutes } from './routes/eventos.js';
 import { batchRoutes } from './routes/batches.js';
 import { consultaRoutes } from './routes/consultas.js';
+import { geoRoutes } from './routes/geo.js';
 import { registerPlayground } from './routes/playground.js';
 import { registerMcp } from './routes/mcp.js';
 import { setupLinkRoutes, registerSetupForm } from './routes/setup.js';
@@ -229,6 +230,7 @@ export const buildApp = async () => {
       await api.register(eventoRoutes);
       await api.register(batchRoutes);
       await api.register(consultaRoutes);
+      await api.register(geoRoutes);
       await api.register(setupLinkRoutes);
     },
     { prefix: '/v1' },

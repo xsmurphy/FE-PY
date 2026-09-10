@@ -30,6 +30,8 @@ import {
   devolverNumero,
 } from './numeracion.service.js';
 import { validatePreSigning, validatePostSigning } from '../lib/xsd-validator.js';
+import { validarDocumentoPorTipo } from '../lib/de-validation.js';
+import { completarUbicacion } from '../lib/geo.js';
 import { extractCdc, extractQrUrl, generateCodigoSeguridad } from '../lib/cdc.js';
 import {
   decryptCertBundle,
@@ -233,6 +235,18 @@ export const createDeDocument = async (input: CreateDeInput): Promise<CreateDeRe
       `tipoDocumento=${tipoDocumento} no soportado. Válidos: 1=FE, 4=Autofactura, 5=NC, 6=ND, 7=NR`,
     );
   }
+
+  // Distrito y departamento se derivan del código de ciudad — el integrador
+  // solo manda `ciudad`. Va ANTES de validar porque completa campos que
+  // xmlgen exige (para `cliente` no los deriva solo).
+  completarUbicacion(body.cliente);
+  completarUbicacion(body.detalleTransporte?.salida);
+  completarUbicacion(body.detalleTransporte?.entrega);
+
+  // Reglas condicionales por tipo (remisión, tipoTransaccion, etc.) ANTES
+  // de tocar la numeración: un documento inválido no debe consumir un
+  // correlativo. Corre también en el camino batch, que entra por acá.
+  validarDocumentoPorTipo(body);
 
   const establecimiento = String(body.establecimiento ?? '').padStart(3, '0');
   const punto = String(body.punto ?? '').padStart(3, '0');

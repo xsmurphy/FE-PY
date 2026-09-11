@@ -596,6 +596,15 @@ Una vez que tengas el primer cliente real emitiendo facturas en staging:
 
 ### Sprint 1 — Producto completo (2 semanas)
 
+- **Admin de companies (plataformas integradoras tipo Punto)** — hoy el alta
+  es `POST /v1/companies` con `x-signup-token` por curl, sin UI. Falta la
+  capa de operador: listar companies, crearlas, ver sus tenants y
+  **revocar/rotar la API key de OTRA company** (hoy solo existe
+  `POST /companies/me/keys/rotate`, que la company hace sobre sí misma — si
+  se filtra la key de un integrador no hay forma de cortarla desde nuestro
+  lado). Requiere rol admin separado de las API keys de company, auth
+  propia del panel y auditoría de quién creó/revocó qué. Es la primera pieza
+  del panel admin del Sprint 2.
 - Eventos restantes: conformidad, disconformidad, desconocimiento, notificación, nominación, actualización transporte
 - Alerta automática de certs por vencer (email via Resend o similar, no solo log)
 - KUDE realmente probado contra XML firmado

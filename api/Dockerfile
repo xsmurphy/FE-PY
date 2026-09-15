@@ -112,6 +112,8 @@ RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 COPY --from=api-builder /app/api/dist ./dist
 # Las migrations SQL no pasan por tsc — se copian aparte
 COPY api/src/db/migrations ./dist/db/migrations
+# Templates KUDE parcheados (no recortan datos fiscales) — ver kude.service.ts
+COPY api/kude-templates ./kude-templates
 
 # Entrypoint
 COPY api/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh

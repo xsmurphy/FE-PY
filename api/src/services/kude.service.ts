@@ -16,7 +16,8 @@
  * Nuestra estrategia:
  *   1. Bypass del wrapper externo roto — llamamos a KUDEGen directamente
  *   2. Escribimos el XML firmado a un tmp file con path sin espacios
- *   3. Usamos los jasper templates bundleados en node_modules/.../dist/DE/
+ *   3. Usamos NUESTROS templates parcheados (api/kude-templates/DE/), no los
+ *      bundleados en node_modules — ver getJasperTemplatesDir
  *   4. Generamos el PDF en un tmp dir, leemos el buffer, borramos todo
  *   5. Todo gated por ENABLE_KUDE — si Java no está instalado, devuelve null
  *
@@ -40,7 +41,8 @@ import { createRequire } from 'node:module';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { writeFile, readFile, unlink, mkdtemp, rm, readdir } from 'node:fs/promises';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { existsSync } from 'node:fs';
 import { env } from '../config/env.js';
@@ -62,9 +64,27 @@ const getKudePkgPath = (): string => {
   return kudePkgPath;
 };
 
+/**
+ * Templates Jasper del KUDE — los NUESTROS, no los del paquete.
+ *
+ * Los bundleados en facturacionelectronicapy-kude traen todos los campos con
+ * textAdjust=CUT_TEXT y anchos pensados para Helvetica y datos cortos. En
+ * producción (fuente DejaVu, más ancha) recortaban en silencio datos
+ * fiscales: los últimos 8 dígitos del CDC, el CDC del documento asociado,
+ * montos, razón social, direcciones, descripción de ítems (incidente
+ * 2026-09-15). api/kude-templates/DE/ son esos mismos templates parcheados
+ * con kude-patch/PatchKude.java y verificados con kude-patch/Audit.java
+ * contra datos de peor caso con las fuentes de la imagen de producción.
+ *
+ * Si se actualiza el paquete, hay que volver a correr el parche y la
+ * auditoría (ver kude-patch/README.md) — nunca apuntar de vuelta a
+ * node_modules.
+ */
 const getJasperTemplatesDir = (): string => {
   if (!jasperTemplatesDir) {
-    jasperTemplatesDir = join(getKudePkgPath(), 'DE');
+    // src/services o dist/services → api/kude-templates/DE
+    const here = dirname(fileURLToPath(import.meta.url));
+    jasperTemplatesDir = resolve(here, '../../kude-templates/DE');
     if (!existsSync(jasperTemplatesDir)) {
       throw new Error(`KUDE jasper templates dir not found: ${jasperTemplatesDir}`);
     }

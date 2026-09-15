@@ -1,13 +1,9 @@
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { createRequire } from 'node:module';
-import { writeFile, unlink } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { and, eq, desc } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { documents, tenantCerts } from '../db/schema.js';
+import { documents } from '../db/schema.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireTenantScope, requireActiveTenant } from '../middleware/tenant-scope.js';
 import {
@@ -19,11 +15,11 @@ import { extractQrUrl } from '../lib/cdc.js';
 import { idempotencyCheck, idempotencyPersist } from '../middleware/idempotency.js';
 import { createDeDocument } from '../services/de.service.js';
 import { isDocumentCancelled } from '../services/evento.service.js';
-import { decryptCertBundle } from '../services/cert.service.js';
 import { NotFoundError, BadRequestError, SifenError } from '../lib/errors.js';
 import { env } from '../config/env.js';
 import { getPresignedDownloadUrl, getObject, uploadObject, storageKey } from '../storage/s3.js';
 import { generateKudePdf } from '../services/kude.service.js';
+import { withTenantCertFile } from '../services/tenant-cert.js';
 import { findDocumentByCdc } from '../services/document-lookup.js';
 
 const require = createRequire(import.meta.url);
@@ -694,101 +690,64 @@ export const documentRoutes: FastifyPluginAsyncZod = async (app) => {
       });
       if (!docRow) throw new NotFoundError('Document');
 
-      // Cargar cert del tenant para autenticar con SIFEN
-      const [certRow] = await db
-        .select()
-        .from(tenantCerts)
-        .where(
-          and(
-            eq(tenantCerts.tenantId, request.tenant!.id),
-            eq(tenantCerts.companyId, request.company!.id),
-          ),
-        )
-        .limit(1);
-      if (!certRow) throw new NotFoundError('Certificate for tenant');
-      if (certRow.revokedAt) {
-        throw new BadRequestError('Certificate is revoked');
-      }
+      return withTenantCertFile(
+        { companyId: request.company!.id, tenantId: request.tenant!.id, proposito: 'cert-query' },
+        async (tmpCertPath, password) => {
+          const requestId = Number(Date.now() % 1_000_000);
 
-      const decrypted = decryptCertBundle({
-        p12: {
-          ciphertext: certRow.encryptedP12,
-          iv: certRow.ivP12,
-          tag: certRow.tagP12,
+          let sifenResponseRaw: Record<string, unknown>;
+          try {
+            const response = await setapi.consulta(
+              requestId,
+              request.params.cdc,
+              request.tenant!.env,
+              tmpCertPath,
+              password,
+            );
+            sifenResponseRaw =
+              typeof response === 'string' ? { raw: response } : (response as Record<string, unknown>);
+          } catch (sifenErr) {
+            const msg = sifenErr instanceof Error ? sifenErr.message : String(sifenErr);
+            throw new SifenError(`Error al consultar SIFEN: ${msg}`);
+          }
+
+          // Parser calibrado con producción — ver lib/sifen-response.ts
+          const codigo = extractSifenCodigo(sifenResponseRaw);
+          const mensaje = extractSifenMensaje(sifenResponseRaw);
+          const veredicto = extractSifenEstado(sifenResponseRaw);
+
+          let newEstado: typeof docRow.estado = docRow.estado;
+          if (veredicto) {
+            newEstado = veredicto;
+          } else if (codigo === '0260' || codigo === '0261' || codigo === '0262') {
+            newEstado = 'aprobado';
+          } else if (codigo === '0422') {
+            // 0422 = "CDC encontrado" (verificado en producción 2026-09-07):
+            // el documento existe en SIFEN; sin dEstRes en la respuesta,
+            // mantener el estado local
+            newEstado = docRow.estado;
+          } else if (codigo === '0420' || codigo === '0421') {
+            // CDC inexistente / no procesado — mantener estado local
+            newEstado = docRow.estado;
+          } else if (codigo) {
+            newEstado = 'rechazado';
+          }
+
+          const [updatedRow] = await db
+            .update(documents)
+            .set({
+              estado: newEstado,
+              sifenResponseRaw,
+              sifenCodigoRespuesta: codigo ?? docRow.sifenCodigoRespuesta,
+              sifenMensaje: mensaje ?? docRow.sifenMensaje,
+              updatedAt: new Date(),
+            })
+            .where(eq(documents.id, docRow.id))
+            .returning();
+
+          return serializeDocument(updatedRow, true);
         },
-        password: {
-          ciphertext: certRow.encryptedPassword,
-          iv: certRow.ivPassword,
-          tag: certRow.tagPassword,
-        },
-        dek: {
-          ciphertext: certRow.encryptedDek,
-          iv: certRow.ivDek,
-          tag: certRow.tagDek,
-        },
-      });
-
-      const tmpCertPath = join(tmpdir(), `cert-query-${randomUUID()}.p12`);
-
-      try {
-        await writeFile(tmpCertPath, decrypted.p12, { mode: 0o600 });
-        const requestId = Number(Date.now() % 1_000_000);
-
-        let sifenResponseRaw: Record<string, unknown>;
-        try {
-          const response = await setapi.consulta(
-            requestId,
-            request.params.cdc,
-            request.tenant!.env,
-            tmpCertPath,
-            decrypted.password,
-          );
-          sifenResponseRaw =
-            typeof response === 'string' ? { raw: response } : (response as Record<string, unknown>);
-        } catch (sifenErr) {
-          const msg = sifenErr instanceof Error ? sifenErr.message : String(sifenErr);
-          throw new SifenError(`Error al consultar SIFEN: ${msg}`);
-        }
-
-        // Parser calibrado con producción — ver lib/sifen-response.ts
-        const codigo = extractSifenCodigo(sifenResponseRaw);
-        const mensaje = extractSifenMensaje(sifenResponseRaw);
-        const veredicto = extractSifenEstado(sifenResponseRaw);
-
-        let newEstado: typeof docRow.estado = docRow.estado;
-        if (veredicto) {
-          newEstado = veredicto;
-        } else if (codigo === '0260' || codigo === '0261' || codigo === '0262') {
-          newEstado = 'aprobado';
-        } else if (codigo === '0422') {
-          // 0422 = "CDC encontrado" (verificado en producción 2026-09-07):
-          // el documento existe en SIFEN; sin dEstRes en la respuesta,
-          // mantener el estado local
-          newEstado = docRow.estado;
-        } else if (codigo === '0420' || codigo === '0421') {
-          // CDC inexistente / no procesado — mantener estado local
-          newEstado = docRow.estado;
-        } else if (codigo) {
-          newEstado = 'rechazado';
-        }
-
-        const [updatedRow] = await db
-          .update(documents)
-          .set({
-            estado: newEstado,
-            sifenResponseRaw,
-            sifenCodigoRespuesta: codigo ?? docRow.sifenCodigoRespuesta,
-            sifenMensaje: mensaje ?? docRow.sifenMensaje,
-            updatedAt: new Date(),
-          })
-          .where(eq(documents.id, docRow.id))
-          .returning();
-
-        return serializeDocument(updatedRow, true);
-      } finally {
-        decrypted.p12.fill(0);
-        await unlink(tmpCertPath).catch(() => {});
-      }
+      );
     },
   );
 };

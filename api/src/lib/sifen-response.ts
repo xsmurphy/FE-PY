@@ -143,3 +143,80 @@ export const extractLoteResultado = (resp: AnyRecord, cdc?: string): LoteDeResul
     protocoloAutorizacion: asString(findDeep(entry, 'dProtAut')),
   };
 };
+
+// ═════════════════════════════════════════════════════════════════
+// Consulta de DE por CDC (consulta.wsdl → rEnviConsDeResponse)
+// ═════════════════════════════════════════════════════════════════
+//
+// Respuesta: { dFecProc, dCodRes: "0422", dMsgRes: "CDC encontrado",
+//              xContenDE: <rContDe><rDE>…</rDE><dProtAut>…</dProtAut></rContDe> }
+//
+// xContenDE llega como TEXTO (XML escapado) o ya parseado a objeto según cómo
+// SIFEN lo envuelva — se soportan las dos formas.
+
+export interface ConsultaDeResultado {
+  codigo?: string;
+  mensaje?: string;
+  /** 0422 = CDC encontrado. */
+  encontrado: boolean;
+  /** Datos del bloque gTimb del DE consultado. */
+  timbrado?: {
+    tipoDocumento?: string;
+    timbrado?: string;
+    establecimiento?: string;
+    punto?: string;
+    numero?: string;
+    /** dSerieNum; null = el documento no informa serie. */
+    serie: string | null;
+    inicioVigencia?: string;
+  };
+  fechaEmision?: string;
+  protocoloAutorizacion?: string;
+  /** XML del documento tal como lo devuelve SIFEN, si vino como texto. */
+  xml?: string;
+}
+
+const decodeXmlEntities = (s: string): string =>
+  s
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&');
+
+const tagDesdeTexto = (xml: string, tag: string): string | undefined => {
+  const m = new RegExp(`<(?:\\w+:)?${tag}>([^<]*)</(?:\\w+:)?${tag}>`).exec(xml);
+  return m ? m[1].trim() : undefined;
+};
+
+export const extractConsultaDe = (resp: AnyRecord): ConsultaDeResultado => {
+  const root = stripNsKeys(resp);
+  const codigo = asString(findDeep(root, 'dCodRes'));
+  const mensaje = asString(findDeep(root, 'dMsgRes'));
+  const contenido = findDeep(root, 'xContenDE');
+
+  const resultado: ConsultaDeResultado = { codigo, mensaje, encontrado: codigo === '0422' };
+  if (contenido == null) return resultado;
+
+  let campo: (tag: string) => string | undefined;
+  if (typeof contenido === 'string') {
+    const xml = contenido.includes('&lt;') ? decodeXmlEntities(contenido) : contenido;
+    resultado.xml = xml;
+    campo = (tag) => tagDesdeTexto(xml, tag);
+  } else {
+    campo = (tag) => asString(findDeep(contenido, tag));
+  }
+
+  resultado.timbrado = {
+    tipoDocumento: campo('iTiDE'),
+    timbrado: campo('dNumTim'),
+    establecimiento: campo('dEst'),
+    punto: campo('dPunExp'),
+    numero: campo('dNumDoc'),
+    serie: campo('dSerieNum') ?? null,
+    inicioVigencia: campo('dFeIniT'),
+  };
+  resultado.fechaEmision = campo('dFeEmiDE');
+  resultado.protocoloAutorizacion = campo('dProtAut');
+  return resultado;
+};

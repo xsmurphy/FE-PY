@@ -419,6 +419,21 @@ SIFEN 48h. `GET /eventos?cdc=` lista eventos.
     Un `serie` explícito en el body del POST /de tiene prioridad. Formato:
     dos letras mayúsculas.
 
+    **Cómo saber qué serie usa un punto**: no adivinarla (el KUDE de otros
+    sistemas suele no imprimirla). Leerla del documento aprobado en SIFEN:
+
+    ```
+    GET /v1/tenants/{id}/consulta/de/{cdc}
+    → { encontrado, codigoRespuesta, timbrado: { establecimiento, punto,
+        numero, serie, timbrado, inicioVigencia }, fechaEmision,
+        protocoloAutorizacion, xml }
+    ```
+
+    Funciona con CDCs que NO emitió FE-PY (p. ej. los del sistema anterior
+    del cliente), usando el certificado del tenant. Solo acepta CDCs del RUC
+    del propio tenant (403 si no). `serie: null` = ese documento no informa
+    serie.
+
 ## 5b. Contrato de `Idempotency-Key`
 
 No estaba documentado y Punto lo pidió explícitamente (2026-09-10).

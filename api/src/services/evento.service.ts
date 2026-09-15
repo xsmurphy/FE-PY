@@ -26,7 +26,8 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { documents, eventos, tenantCerts, type Tenant, type EventoRow } from '../db/schema.js';
+import { eventos, tenantCerts, type Tenant, type EventoRow } from '../db/schema.js';
+import { findDocumentByCdc } from './document-lookup.js';
 import { decryptCertBundle, type EncryptedCertBundle } from './cert.service.js';
 import { uploadObject, storageKey } from '../storage/s3.js';
 import {
@@ -203,17 +204,8 @@ export const cancelarDocumento = async (input: CancelacionInput): Promise<Evento
   }
 
   // 2. Buscar el documento y verificar que sea cancelable
-  const [docRow] = await db
-    .select()
-    .from(documents)
-    .where(
-      and(
-        eq(documents.companyId, companyId),
-        eq(documents.tenantId, tenant.id),
-        eq(documents.cdc, cdc),
-      ),
-    )
-    .limit(1);
+  // Siempre el intento vigente: cancelar sobre un rechazado sería inválido.
+  const docRow = await findDocumentByCdc({ companyId, tenantId: tenant.id, cdc });
 
   if (!docRow) throw new NotFoundError('Document');
 

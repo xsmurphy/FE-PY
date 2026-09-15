@@ -28,6 +28,7 @@ import {
   asignarSiguienteNumero,
   registrarNumeroExplicito,
   devolverNumero,
+  obtenerSerie,
 } from './numeracion.service.js';
 import { validatePreSigning, validatePostSigning } from '../lib/xsd-validator.js';
 import { validarDocumentoPorTipo } from '../lib/de-validation.js';
@@ -298,8 +299,24 @@ export const createDeDocument = async (input: CreateDeInput): Promise<CreateDeRe
 
     const infoEmi = construirInfoEmi(body.observacion, input.leyendaDocumento);
 
+    // dSerieNum: la serie es un atributo del punto de expedición, no de cada
+    // venta — vive en `numeracion`. Un `serie` explícito en el body tiene
+    // prioridad (ya validado en de-validation). xmlgen acepta `serie` y
+    // `numeroSerie`; normalizamos a uno solo para que no puedan divergir.
+    const serie =
+      (body.serie as string | undefined) ??
+      (body.numeroSerie as string | undefined) ??
+      (await obtenerSerie(tx as unknown as Parameters<typeof obtenerSerie>[0], {
+        tenantId: tenant.id,
+        tipo: tipoDocumento,
+        establecimiento,
+        punto,
+      }));
+
+    const { numeroSerie: _ignorado, serie: _ignorada, ...bodySinSerie } = body;
     const dataForXmlgen = {
-      ...body,
+      ...bodySinSerie,
+      ...(serie ? { serie } : {}),
       ...(infoEmi ? { observacion: infoEmi } : {}),
       tipoDocumento,
       establecimiento,

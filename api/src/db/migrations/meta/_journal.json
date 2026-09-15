@@ -57,6 +57,13 @@
       "when": 1788980947396,
       "tag": "0007_document_qr_url",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1789494295855,
+      "tag": "0008_numeracion_serie_cdc_parcial",
+      "breakpoints": true
     }
   ]
 }

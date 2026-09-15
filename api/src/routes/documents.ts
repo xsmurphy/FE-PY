@@ -24,6 +24,7 @@ import { NotFoundError, BadRequestError, SifenError } from '../lib/errors.js';
 import { env } from '../config/env.js';
 import { getPresignedDownloadUrl, getObject, uploadObject, storageKey } from '../storage/s3.js';
 import { generateKudePdf } from '../services/kude.service.js';
+import { findDocumentByCdc } from '../services/document-lookup.js';
 
 const require = createRequire(import.meta.url);
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -488,17 +489,11 @@ export const documentRoutes: FastifyPluginAsyncZod = async (app) => {
       },
     },
     async (request) => {
-      const [row] = await db
-        .select()
-        .from(documents)
-        .where(
-          and(
-            eq(documents.companyId, request.company!.id),
-            eq(documents.tenantId, request.tenant!.id),
-            eq(documents.cdc, request.params.cdc),
-          ),
-        )
-        .limit(1);
+      const row = await findDocumentByCdc({
+        companyId: request.company!.id,
+        tenantId: request.tenant!.id,
+        cdc: request.params.cdc,
+      });
 
       if (!row) throw new NotFoundError('Document');
       return serializeDocument(await backfillQrUrl(row), true);
@@ -536,17 +531,11 @@ export const documentRoutes: FastifyPluginAsyncZod = async (app) => {
       },
     },
     async (request) => {
-      const [row] = await db
-        .select()
-        .from(documents)
-        .where(
-          and(
-            eq(documents.companyId, request.company!.id),
-            eq(documents.tenantId, request.tenant!.id),
-            eq(documents.cdc, request.params.cdc),
-          ),
-        )
-        .limit(1);
+      const row = await findDocumentByCdc({
+        companyId: request.company!.id,
+        tenantId: request.tenant!.id,
+        cdc: request.params.cdc,
+      });
       if (!row) throw new NotFoundError('Document');
       if (!row.xmlStorageKey) {
         throw new BadRequestError('El documento no tiene XML firmado persistido');
@@ -602,26 +591,20 @@ export const documentRoutes: FastifyPluginAsyncZod = async (app) => {
       },
     },
     async (request, reply) => {
-      const [row] = await db
-        .select({ kudeKey: documents.kudeStorageKey })
-        .from(documents)
-        .where(
-          and(
-            eq(documents.companyId, request.company!.id),
-            eq(documents.tenantId, request.tenant!.id),
-            eq(documents.cdc, request.params.cdc),
-          ),
-        )
-        .limit(1);
+      const row = await findDocumentByCdc({
+        companyId: request.company!.id,
+        tenantId: request.tenant!.id,
+        cdc: request.params.cdc,
+      });
 
       if (!row) throw new NotFoundError('Document');
-      if (!row.kudeKey) {
+      if (!row.kudeStorageKey) {
         throw new NotFoundError(
           'KUDE not available for this document — was it generated with ENABLE_KUDE=true?',
         );
       }
 
-      const pdfBuffer = await getObject(row.kudeKey);
+      const pdfBuffer = await getObject(row.kudeStorageKey);
       return reply
         .header('content-type', 'application/pdf')
         .header('content-disposition', `attachment; filename="${request.params.cdc}.pdf"`)
@@ -651,24 +634,18 @@ export const documentRoutes: FastifyPluginAsyncZod = async (app) => {
       },
     },
     async (request, reply) => {
-      const [row] = await db
-        .select({ xmlKey: documents.xmlStorageKey })
-        .from(documents)
-        .where(
-          and(
-            eq(documents.companyId, request.company!.id),
-            eq(documents.tenantId, request.tenant!.id),
-            eq(documents.cdc, request.params.cdc),
-          ),
-        )
-        .limit(1);
+      const row = await findDocumentByCdc({
+        companyId: request.company!.id,
+        tenantId: request.tenant!.id,
+        cdc: request.params.cdc,
+      });
 
       if (!row) throw new NotFoundError('Document');
-      if (!row.xmlKey) {
+      if (!row.xmlStorageKey) {
         throw new NotFoundError('XML not available for this document');
       }
 
-      const xmlBuffer = await getObject(row.xmlKey);
+      const xmlBuffer = await getObject(row.xmlStorageKey);
       return reply
         .header('content-type', 'application/xml; charset=utf-8')
         .header('content-disposition', `attachment; filename="${request.params.cdc}.xml"`)
@@ -710,17 +687,11 @@ export const documentRoutes: FastifyPluginAsyncZod = async (app) => {
         );
       }
 
-      const [docRow] = await db
-        .select()
-        .from(documents)
-        .where(
-          and(
-            eq(documents.companyId, request.company!.id),
-            eq(documents.tenantId, request.tenant!.id),
-            eq(documents.cdc, request.params.cdc),
-          ),
-        )
-        .limit(1);
+      const docRow = await findDocumentByCdc({
+        companyId: request.company!.id,
+        tenantId: request.tenant!.id,
+        cdc: request.params.cdc,
+      });
       if (!docRow) throw new NotFoundError('Document');
 
       // Cargar cert del tenant para autenticar con SIFEN

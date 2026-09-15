@@ -193,6 +193,15 @@ export const validarDocumentoPorTipo = (body: Body): void => {
   const tipo = Number(body.tipoDocumento ?? 1);
   const errores: string[] = [];
 
+  for (const campo of ['serie', 'numeroSerie'] as const) {
+    if (body[campo] != null && !/^[A-Z]{2}$/.test(String(body[campo]))) {
+      errores.push(`${campo}="${body[campo]}" inválida: dos letras mayúsculas, ej. "AA" (dSerieNum)`);
+    }
+  }
+  if (body.serie != null && body.numeroSerie != null && body.serie !== body.numeroSerie) {
+    errores.push('serie y numeroSerie son el mismo dato (dSerieNum) y no coinciden — mandá solo uno');
+  }
+
   if (tipo === 7) {
     validarRemision(body, errores);
   } else if (!body.tipoTransaccion) {

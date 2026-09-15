@@ -159,8 +159,11 @@ export const setNumeracion = async (input: {
   tipo: number;
   establecimiento: string;
   punto: string;
-  ultimoNumero: number;
-}): Promise<{ ultimoNumero: number; proximoNumero: number }> => {
+  /** undefined = conservar el correlativo actual (p. ej. solo se cambia la serie). */
+  ultimoNumero?: number;
+  /** undefined = no tocar la serie guardada; null = quitarla. */
+  serie?: string | null;
+}): Promise<{ ultimoNumero: number; proximoNumero: number; serie: string | null }> => {
   const [maxRow] = await db
     .select({ max: sql<string>`COALESCE(MAX(${documents.numero}::int), 0)` })
     .from(documents)
@@ -174,27 +177,73 @@ export const setNumeracion = async (input: {
       ),
     );
   const maxActivo = Number(maxRow?.max ?? 0);
-  if (input.ultimoNumero < maxActivo) {
+
+  // Sin ultimoNumero: se conserva el correlativo vigente. Si todavía no hay
+  // fila, arranca en el mayor número activo — nunca por debajo.
+  let ultimoNumero = input.ultimoNumero;
+  if (ultimoNumero === undefined) {
+    const [actual] = await db
+      .select({ ultimoNumero: numeracion.ultimoNumero })
+      .from(numeracion)
+      .where(
+        and(
+          eq(numeracion.tenantId, input.tenantId),
+          eq(numeracion.tipo, input.tipo),
+          eq(numeracion.establecimiento, input.establecimiento),
+          eq(numeracion.punto, input.punto),
+        ),
+      )
+      .limit(1);
+    ultimoNumero = Math.max(Number(actual?.ultimoNumero ?? 0), maxActivo);
+  }
+
+  if (ultimoNumero < maxActivo) {
     throw new ConflictError(
-      `ultimoNumero=${input.ultimoNumero} es menor que el mayor número activo ya emitido (${maxActivo}) — colisionaría en la próxima emisión`,
+      `ultimoNumero=${ultimoNumero} es menor que el mayor número activo ya emitido (${maxActivo}) — colisionaría en la próxima emisión`,
     );
   }
 
-  await db
+  const [row] = await db
     .insert(numeracion)
     .values({
       tenantId: input.tenantId,
       tipo: input.tipo,
       establecimiento: input.establecimiento,
       punto: input.punto,
-      ultimoNumero: input.ultimoNumero,
+      ultimoNumero,
+      serie: input.serie ?? null,
     })
     .onConflictDoUpdate({
       target: [numeracion.tenantId, numeracion.tipo, numeracion.establecimiento, numeracion.punto],
-      set: { ultimoNumero: input.ultimoNumero, updatedAt: new Date() },
-    });
+      set: {
+        ultimoNumero,
+        ...(input.serie !== undefined ? { serie: input.serie } : {}),
+        updatedAt: new Date(),
+      },
+    })
+    .returning({ serie: numeracion.serie });
 
-  return { ultimoNumero: input.ultimoNumero, proximoNumero: input.ultimoNumero + 1 };
+  return {
+    ultimoNumero,
+    proximoNumero: ultimoNumero + 1,
+    serie: row?.serie ?? null,
+  };
+};
+
+/**
+ * Serie (dSerieNum) configurada para un punto de expedición, o null.
+ * Se lee dentro de la misma transacción de la emisión para que un cambio
+ * de serie concurrente no produzca un documento con serie a medias.
+ */
+export const obtenerSerie = async (tx: Tx, input: AsignarNumeroInput): Promise<string | null> => {
+  const rows = (await tx.execute(sql`
+    SELECT serie FROM numeracion
+    WHERE tenant_id = ${input.tenantId}
+      AND tipo = ${input.tipo}
+      AND establecimiento = ${input.establecimiento}
+      AND punto = ${input.punto}
+  `)) as unknown as Array<{ serie: string | null }>;
+  return rows[0]?.serie ?? null;
 };
 
 /**
@@ -207,6 +256,7 @@ export const listNumeracion = async (tenantId: string) => {
       establecimiento: numeracion.establecimiento,
       punto: numeracion.punto,
       ultimoNumero: numeracion.ultimoNumero,
+      serie: numeracion.serie,
       updatedAt: numeracion.updatedAt,
     })
     .from(numeracion)
@@ -217,6 +267,7 @@ export const listNumeracion = async (tenantId: string) => {
     punto: r.punto,
     ultimoNumero: Number(r.ultimoNumero),
     proximoNumero: Number(r.ultimoNumero) + 1,
+    serie: r.serie ?? null,
     updatedAt: r.updatedAt.toISOString(),
   }));
 };

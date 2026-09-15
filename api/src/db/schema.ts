@@ -270,8 +270,15 @@ export const documents = pgTable(
   },
   (t) => ({
     // Scoped por company (auditoría 2026-09-08): un CDC global permitiría
-    // a una company "ocupar" el CDC de otra y bloquearle la emisión
-    cdcUnique: uniqueIndex('documents_cdc_unique').on(t.companyId, t.cdc),
+    // a una company "ocupar" el CDC de otra y bloquearle la emisión.
+    // PARCIAL, igual que el número: un DE rechazado no queda registrado en
+    // SIFEN, así que reenviar el MISMO CDC es legítimo. Con el índice total,
+    // el reintento de un rechazado moría con duplicate key y el integrador
+    // nunca veía la respuesta real de SIFEN (Balloon Party 001-001-0000839,
+    // 7 reintentos, 2026-09-14). Buscar por CDC → document-lookup.ts.
+    cdcUnique: uniqueIndex('documents_cdc_unique')
+      .on(t.companyId, t.cdc)
+      .where(sql`estado NOT IN ('rechazado', 'error')`),
     // Unicidad PARCIAL: los docs rechazados/error no bloquean el número —
     // SIFEN no los registra, así que el número es fiscalmente reutilizable
     // (verificado en producción 2026-09-07: reintentar tras rechazo rompía
@@ -301,6 +308,13 @@ export const numeracion = pgTable(
     establecimiento: text('establecimiento').notNull(),
     punto: text('punto').notNull(),
     ultimoNumero: bigint('ultimo_numero', { mode: 'number' }).notNull().default(0),
+    // dSerieNum (C010): serie de la numeración de este punto de expedición,
+    // dos letras mayúsculas. SIFEN la ata a (timbrado, establecimiento, punto):
+    // si un sistema anterior emitió en este punto con serie, todo documento
+    // posterior debe informar la misma o SIFEN rechaza con 1110 "Serie
+    // informada incorrecta" (caso real: Balloon Party en 001-001, que
+    // Factomate emitía con serie "AA", 2026-09-15). null = sin serie.
+    serie: text('serie'),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({

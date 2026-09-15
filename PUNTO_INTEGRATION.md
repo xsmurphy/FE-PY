@@ -401,6 +401,23 @@ SIFEN 48h. `GET /eventos?cdc=` lista eventos.
 11. **Puntos de expedición**: usar un punto distinto al del sistema FE
     anterior del cliente (colisión de correlativo = rechazos en su operación
     actual). Balloon Party: Factomate usa 001-001, FE-PY usa 001-002.
+12. **Serie del punto de expedición (dSerieNum) — rechazo 1110.** Si el
+    sistema anterior emitió en un punto con serie (la integración de Punto con
+    Factomate mandaba `series: "AA"` por defecto), SIFEN exige que todo
+    documento posterior en ese punto informe la MISMA serie, o rechaza con
+    `1110 "Serie informada incorrecta"`. Caso real: Balloon Party en 001-001
+    (2026-09-14/15); 001-002 nunca tuvo serie y por eso aprobaba. La serie se
+    configura una vez por punto y tipo de documento, no por venta:
+
+    ```
+    PUT /v1/tenants/{id}/numeracion
+    { "tipoDocumento": 1, "establecimiento": "001", "punto": "001", "serie": "AA" }
+    ```
+
+    `ultimoNumero` es opcional en ese PUT (si se omite se conserva el
+    vigente); `serie: null` la quita. FE-PY la inyecta sola en cada emisión.
+    Un `serie` explícito en el body del POST /de tiene prioridad. Formato:
+    dos letras mayúsculas.
 
 ## 5b. Contrato de `Idempotency-Key`
 

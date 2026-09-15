@@ -280,11 +280,15 @@ export const tenantRoutes: FastifyPluginAsyncZod = async (app) => {
   );
 
   // ─────────────────────────────────────────────────────
-  // PUT /v1/tenants/:tenant_id/numeracion — setear correlativo
+  // PUT /v1/tenants/:tenant_id/numeracion — setear correlativo y serie
   //
   // Onboarding de clientes que migran con numeración avanzada: setea el
   // último número usado; la próxima emisión sale con +1. Rechaza (409)
   // retroceder por debajo del mayor número activo ya emitido.
+  //
+  // `serie` (dSerieNum): si el sistema anterior emitió en ese punto con
+  // serie, hay que declararla — SIFEN rechaza con 1110 "Serie informada
+  // incorrecta" todo documento que no la repita.
   // ─────────────────────────────────────────────────────
   app.put(
     '/tenants/:tenant_id/numeracion',
@@ -292,15 +296,29 @@ export const tenantRoutes: FastifyPluginAsyncZod = async (app) => {
       preHandler: [requireAuth, requireTenantScope],
       schema: {
         tags: ['tenants'],
-        summary: 'Setear el correlativo de numeración (onboarding/migración)',
+        summary: 'Setear correlativo y serie de un punto de expedición (onboarding/migración)',
+        description:
+          '`ultimoNumero` = último número YA usado (la próxima emisión sale con +1); si se omite se ' +
+          'conserva el vigente. `serie` = dSerieNum de dos letras mayúsculas: obligatoria cuando el ' +
+          'sistema anterior emitió en ese punto con serie (si no, SIFEN rechaza con 1110). ' +
+          '`serie: null` la quita; omitirla no la cambia.',
         security: [{ bearerAuth: [] }],
         params: z.object({ tenant_id: z.string().uuid() }),
-        body: z.object({
-          tipoDocumento: z.number().int().min(1).max(8),
-          establecimiento: z.string().regex(/^\d{3}$/),
-          punto: z.string().regex(/^\d{3}$/),
-          ultimoNumero: z.number().int().min(0).max(9_999_999),
-        }),
+        body: z
+          .object({
+            tipoDocumento: z.number().int().min(1).max(8),
+            establecimiento: z.string().regex(/^\d{3}$/),
+            punto: z.string().regex(/^\d{3}$/),
+            ultimoNumero: z.number().int().min(0).max(9_999_999).optional(),
+            serie: z
+              .string()
+              .regex(/^[A-Z]{2}$/, 'serie: dos letras mayúsculas, ej. "AA"')
+              .nullable()
+              .optional(),
+          })
+          .refine((b) => b.ultimoNumero !== undefined || b.serie !== undefined, {
+            message: 'Informá ultimoNumero, serie, o ambos',
+          }),
         response: {
           200: z.object({
             tipoDocumento: z.number(),
@@ -308,18 +326,20 @@ export const tenantRoutes: FastifyPluginAsyncZod = async (app) => {
             punto: z.string(),
             ultimoNumero: z.number(),
             proximoNumero: z.number(),
+            serie: z.string().nullable(),
           }),
         },
       },
     },
     async (request) => {
-      const { tipoDocumento, establecimiento, punto, ultimoNumero } = request.body;
+      const { tipoDocumento, establecimiento, punto, ultimoNumero, serie } = request.body;
       const result = await setNumeracion({
         tenantId: request.tenant!.id,
         tipo: tipoDocumento,
         establecimiento,
         punto,
         ultimoNumero,
+        serie,
       });
       return { tipoDocumento, establecimiento, punto, ...result };
     },
@@ -346,6 +366,7 @@ export const tenantRoutes: FastifyPluginAsyncZod = async (app) => {
                 punto: z.string(),
                 ultimoNumero: z.number(),
                 proximoNumero: z.number(),
+                serie: z.string().nullable(),
                 updatedAt: z.string(),
               }),
             ),

@@ -68,6 +68,13 @@ const envSchema = z.object({
   // el alta de plataformas es un trámite interno, no self-service.
   SIGNUP_TOKEN: z.string().min(16).optional(),
 
+  // Token del panel de operador (/admin y /v1/admin/*). Si NO está seteado,
+  // el panel queda CERRADO: /admin responde 404 y todo /v1/admin/* responde
+  // 401 — cerrado por defecto, igual que SIGNUP_TOKEN. El panel cruza datos
+  // de TODAS las companies, así que un default abierto sería una fuga entre
+  // tenants; preferimos que un server mal configurado no sirva nada.
+  ADMIN_TOKEN: z.string().min(32).optional(),
+
   // URL pública del servicio — usada para armar los links de setup que se
   // envían al contribuyente. Sin esto se infiere del request (detrás de un
   // proxy puede quedar mal).

@@ -596,15 +596,21 @@ Una vez que tengas el primer cliente real emitiendo facturas en staging:
 
 ### Sprint 1 — Producto completo (2 semanas)
 
-- **Admin de companies (plataformas integradoras tipo Punto)** — hoy el alta
-  es `POST /v1/companies` con `x-signup-token` por curl, sin UI. Falta la
-  capa de operador: listar companies, crearlas, ver sus tenants y
-  **revocar/rotar la API key de OTRA company** (hoy solo existe
-  `POST /companies/me/keys/rotate`, que la company hace sobre sí misma — si
-  se filtra la key de un integrador no hay forma de cortarla desde nuestro
-  lado). Requiere rol admin separado de las API keys de company, auth
-  propia del panel y auditoría de quién creó/revocó qué. Es la primera pieza
-  del panel admin del Sprint 2.
+- **Admin de companies (plataformas integradoras tipo Punto)** — **v1 de
+  solo lectura HECHA**: `/admin` sirve el panel de operador (companies →
+  tenants, tabla de documentos con filtros por estado/tipo, búsqueda por CDC
+  o por número, detalle con XML/KUDE presigned y eventos del CDC, últimos
+  eventos de todas las companies). Auth propia por `ADMIN_TOKEN`, separada de
+  las API keys de company y cerrada por defecto: sin la env var, `/admin`
+  responde 404 y `/v1/admin/*` responde 401. Ninguna ruta del panel muta
+  nada.
+  Pendiente para la v2: alta de companies desde el panel (hoy sigue siendo
+  `POST /v1/companies` con `x-signup-token` por curl), **revocar/rotar la API
+  key de OTRA company** (hoy solo existe `POST /companies/me/keys/rotate`,
+  que la company hace sobre sí misma — si se filtra la key de un integrador
+  no hay forma de cortarla desde nuestro lado) y, como condición para
+  habilitar cualquiera de las dos, roles de operador en vez del token único
+  compartido + auditoría de quién creó/revocó/miró qué.
 - Eventos restantes: conformidad, disconformidad, desconocimiento, notificación, nominación, actualización transporte
 - Alerta automática de certs por vencer (email via Resend o similar, no solo log)
 - KUDE realmente probado contra XML firmado

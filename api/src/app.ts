@@ -27,6 +27,7 @@ import { batchRoutes } from './routes/batches.js';
 import { consultaRoutes } from './routes/consultas.js';
 import { geoRoutes } from './routes/geo.js';
 import { registerPlayground } from './routes/playground.js';
+import { adminRoutes, registerAdmin } from './routes/admin.js';
 import { registerMcp } from './routes/mcp.js';
 import { setupLinkRoutes, registerSetupForm } from './routes/setup.js';
 
@@ -232,6 +233,7 @@ export const buildApp = async () => {
       await api.register(consultaRoutes);
       await api.register(geoRoutes);
       await api.register(setupLinkRoutes);
+      await api.register(adminRoutes);
     },
     { prefix: '/v1' },
   );
@@ -253,6 +255,11 @@ export const buildApp = async () => {
   // Formulario público de carga de credenciales (token en la URL = auth).
   // Fuera de /v1 a propósito: lo abre el contribuyente, no el integrador.
   registerSetupForm(app as unknown as Parameters<typeof registerSetupForm>[0]);
+
+  // Panel de operador — HTML fuera de /v1 (igual que el playground). No se
+  // gatea con un `if` acá: la ruta existe siempre y devuelve 404 cuando
+  // ADMIN_TOKEN no está seteado, así el gate vive en un solo lugar.
+  registerAdmin(app);
 
   // Playground UI — HTML interactivo para probar la API sin Postman/curl.
   // Sirve en el mismo origen para evitar CORS. Gated: SOLO dev/staging

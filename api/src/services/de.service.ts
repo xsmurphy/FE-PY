@@ -32,6 +32,7 @@ import {
 } from './numeracion.service.js';
 import { validatePreSigning, validatePostSigning } from '../lib/xsd-validator.js';
 import { validarDocumentoPorTipo } from '../lib/de-validation.js';
+import { consolidarItems } from '../lib/consolidacion.js';
 import { completarUbicacion } from '../lib/geo.js';
 import { extractCdc, extractQrUrl, generateCodigoSeguridad } from '../lib/cdc.js';
 import {
@@ -313,9 +314,16 @@ export const createDeDocument = async (input: CreateDeInput): Promise<CreateDeRe
         punto,
       }));
 
-    const { numeroSerie: _ignorado, serie: _ignorada, ...bodySinSerie } = body;
+    // Consolidación: el DE lleva una línea genérica en vez del detalle de la
+    // venta. El detalle original queda en request_json (ver lib/consolidacion).
+    const items = body.consolidacion
+      ? consolidarItems(body.items, body.consolidacion)
+      : body.items;
+
+    const { numeroSerie: _ignorado, serie: _ignorada, consolidacion: _c, ...bodySinSerie } = body;
     const dataForXmlgen = {
       ...bodySinSerie,
+      items,
       ...(serie ? { serie } : {}),
       ...(infoEmi ? { observacion: infoEmi } : {}),
       tipoDocumento,
@@ -345,7 +353,7 @@ export const createDeDocument = async (input: CreateDeInput): Promise<CreateDeRe
         numero,
         fechaEmision: new Date(fecha),
         moneda: body.moneda ?? 'PYG',
-        montoTotal: String(calcularMontoTotal(body)),
+        montoTotal: String(calcularMontoTotal(items)),
         estado: 'generando',
         requestJson: body,
         idempotencyKey: input.idempotencyKey ?? null,
@@ -637,10 +645,10 @@ export const createDeDocument = async (input: CreateDeInput): Promise<CreateDeRe
  * Simplificado para el MVP — el motor xmlgen es la fuente de verdad real.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const calcularMontoTotal = (body: Record<string, any>): number => {
-  if (!Array.isArray(body.items)) return 0;
+const calcularMontoTotal = (items: Record<string, any>[]): number => {
+  if (!Array.isArray(items)) return 0;
   let total = 0;
-  for (const item of body.items) {
+  for (const item of items) {
     const cant = Number(item.cantidad ?? 0);
     const precio = Number(item.precioUnitario ?? 0);
     total += cant * precio;

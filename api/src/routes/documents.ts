@@ -120,6 +120,18 @@ const createDeBodySchema = z
     detalleTransporte: detalleTransporteSchema
       .optional()
       .describe('Obligatorio para tipoDocumento=7; opcional en la factura'),
+    consolidacion: z
+      .object({
+        descripcion: z.string().min(1).max(120).describe('Texto único que verá el comprador, ej. "Servicios prestados"'),
+        codigo: z.string().max(20).optional().describe('Código del ítem consolidado (default "000")'),
+        unidadMedida: z.number().int().positive().optional().describe('Default 77 (unidad)'),
+      })
+      .optional()
+      .describe(
+        'Reemplaza el detalle de ítems por una línea genérica en el DE. Se agrupa por tasa de IVA ' +
+          '(una línea por tasa presente), así el IVA declarado sigue siendo el real. El detalle ' +
+          'original se conserva en el documento almacenado. No aplica a la Nota de Remisión.',
+      ),
     items: z.array(z.object({}).passthrough()).min(1),
   })
   .passthrough();

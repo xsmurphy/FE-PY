@@ -472,6 +472,42 @@ payload. Es una decisión válida —evita el 409 permanente si un deploy
 altera el payload de un reintento— pero mueve la garantía a un paso del
 integrador: consultar por `txnId` o por número **antes** de reemitir.
 
+## 5c. Consolidación de ítems (ocultar el detalle en la FE)
+
+Para ventas con listados largos cuyo detalle ya va en el comprobante
+impreso del comercio: el DE lleva una línea genérica en vez de los 30
+ítems. Se activa por documento, mandando `consolidacion` en el POST /de:
+
+```json
+{
+  "tipoDocumento": 1,
+  "items": [ /* la venta REAL, con sus 30 ítems y sus tasas */ ],
+  "consolidacion": { "descripcion": "Servicios prestados" }
+}
+```
+
+Opcionales: `codigo` (default `"000"`) y `unidadMedida` (default `77`).
+
+Qué hace FE-PY con eso:
+
+- Agrupa los ítems **por tasa de IVA** y emite una línea por tasa presente,
+  con `cantidad: 1` y el precio igual al total de ese grupo. Una venta toda
+  al 10% —el caso común— queda en **una sola línea**.
+- **No** aplasta una venta mixta a una sola tasa: el IVA se liquida por ítem
+  (gCamIVA) y declarar todo a una tasa falsearía el impuesto. Con 10%, 5% y
+  exentas salen tres líneas, todas con el mismo texto.
+- Respeta descuentos y anticipos por ítem al sumar cada grupo.
+- El total, el IVA y los subtotales por tasa quedan **idénticos** a los de
+  la venta con el detalle completo (hay un test que lo compara campo a
+  campo contra el XML sin consolidar).
+- El detalle original se conserva en el documento almacenado
+  (`request_json`), así que no se pierde para auditoría ni soporte.
+- No aplica a la Nota de Remisión (tipoDocumento=7): sus ítems no llevan
+  precio. Se rechaza con 422.
+
+Qué queda del lado del ERP: decidir qué tasa lleva cada ítem de la venta.
+FE-PY no infiere ni redistribuye impuestos.
+
 ## 6. Nota de Remisión Electrónica (tipoDocumento=7)
 
 Documento fiscal que ampara el **TRASLADO** de mercadería, no una venta. No

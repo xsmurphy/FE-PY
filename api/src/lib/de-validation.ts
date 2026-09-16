@@ -202,6 +202,12 @@ export const validarDocumentoPorTipo = (body: Body): void => {
     errores.push('serie y numeroSerie son el mismo dato (dSerieNum) y no coinciden — mandá solo uno');
   }
 
+  if (body.consolidacion != null && tipo === 7) {
+    errores.push(
+      'consolidacion no aplica a la Nota de Remisión (tipoDocumento=7): sus ítems no llevan precio',
+    );
+  }
+
   if (tipo === 7) {
     validarRemision(body, errores);
   } else if (!body.tipoTransaccion) {

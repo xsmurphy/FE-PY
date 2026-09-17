@@ -4,6 +4,10 @@
 completo vive en los commits y en `_handoff.md` (estado de la sesión más
 reciente).
 
+## 2026-09-17 — Remisión tipo 7 + serie por punto + KUDE fix fiscal + panel admin con anular/NC
+
+Commits `ee77890..f0d7c1f` (11). Highlights: Nota de Remisión (tipo 7) + catálogo geo `/v1/geo` + validación por tipo pre-reserva de número; `numeracion.serie` por punto de expedición (causa raíz del rechazo 1110 de Balloon Party, serie real "AA" leída del XML en SIFEN, nunca deducida); KUDE recortaba CDC/montos/razones sociales — parche SCALE_FONT + auditoría reproducible con fuentes de prod (`api/kude-patch/`); consolidación de ítems; panel `/admin` (solo lectura) rediseñado y ahora con anular + emitir NC total. Todo pusheado y deployado en Coolify; mig 0008 aplicada en prod. Detalle y trampas en `.claude/_handoff.md`.
+
 ## 2026-09-08 (madrugada) — API deployada en producción: https://fepy.punto.la
 
 Commits `2958042..bd617d1` (5). Highlights: 3 blockers pre-prod resueltos (playground gated, endpoint numeración `/v1/tenants/:id/numeracion`, índice único parcial en `documents` para no bloquear número tras rechazo, mig 0002); deploy en Coolify (server Punto 167.71.165.221) tras 4 intentos fallidos — Dockerfile path, `NODE_ENV=production` mataba devDeps (fix `--include=dev`), healthcheck `localhost`→IPv6 sin resolver (fix `127.0.0.1`); provisioning prod ejecutado (tenant Balloon Party, cert, CSC, numeración FE=614/NC=2). Blocker crítico pendiente: `timbradoFecha` prod mal cargada (2026-02-06, la real es 2025-08-26).

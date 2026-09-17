@@ -1,91 +1,44 @@
-# Hand-off — 2026-09-08 (madrugada)
+# Hand-off — 2026-09-17
 
 ## Objetivo
-Pasar el motor FE-PY (ya validado E2E contra SIFEN producción el 2026-09-07)
-de "corriendo en Docker local del laptop del owner" a un deploy real en
-internet, para poder ofrecerlo a Punto/Factomate como reemplazo del emisor
-actual de Balloon Party.
+Destrabar la emisión real de Balloon Party en 001-001 (rechazo 1110 por
+serie mal asumida), blindar el KUDE contra recorte de datos fiscales, y
+darle al owner un panel propio para operar sin depender de un agente.
 
 ## Estado al cerrar
-**API en producción y funcionando: https://fepy.punto.la** — deployada en
-Coolify sobre el server de Punto (167.71.165.221, proyecto Punto, app
-"Factura Electrónica", uuid `5oj0o6wz7nmwkpez0ffeupej`). TLS ok, health+DB
-ok, `/playground` da 404 (gated), `/docs` público. DBs propias en el mismo
-Coolify: `fepy-db` (Postgres 16) + `fepy-redis`. Storage: DO Spaces del
-owner (env `S3_*` cargadas). Auto-deploy por push está **desactivado** a
-pedido del owner — todo deploy es manual (yo puedo dispararlo vía MCP
-`coolify deploy`).
-
-Provisioning prod ya ejecutado por el owner: company
-`01a07f03-7119-7169-ac27-f14b6084e0d2`, tenant Balloon Party
-`01a07f03-7335-7739-9869-296d3607797d` (env=prod), cert cargado (vence
-2027-02-02), CSC `0001`, numeración FE=614/NC=2 (próximos 615/3).
-
-Todo commiteado y **pusheado** a `github.com/xsmurphy/FE-PY` main
-(`2958042..bd617d1`). Tests 54/54 verdes.
-
-**No deployado ni resuelto todavía**: worker BullMQ (retries/batch async no
-corren en prod), servicio de emisión de prueba desde prod, hand-off de
-credenciales a la sesión Punto.
+Commiteado, pusheado (`ee77890..f0d7c1f`, 11 commits) y **deployado** en
+Coolify (API healthy; worker healthy hasta antes de `f0d7c1f`, que solo
+tocó la API). Mig 0008 (`numeracion.serie` + CDC parcial) corrida en prod.
+Serie "AA" de 001-001 cargada y confirmada: 840/841 APROBADAS, 001-001
+destrabado. Panel `/admin` activo con `ADMIN_TOKEN`, owner ya anuló y emitió
+NC total desde ahí. **A medias:** Remisión (tipo 7) implementada pero NUNCA
+emitida contra SIFEN real. Cantidad fraccionaria en KUDE sin decimales
+(`dCantProSer` Integer en el Jasper, requiere recompilar template).
 
 ## Archivos y cambios
-- `api/src/routes/tenants.ts` — `PUT/GET /v1/tenants/:id/numeracion` (correlativo con guard 409), numeración dual (body.numero explícito del ERP sincroniza con GREATEST)
-- `api/src/db/migrations/0002_*.sql` — índice único PARCIAL en `documents` (rechazado/error no bloquean número)
-- `api/src/routes/playground.ts` — gated detrás de `ENABLE_PLAYGROUND` (default false)
-- `api/Dockerfile` — `--include=dev` en builders (Coolify inyecta `NODE_ENV=production` al build)
-- healthcheck de la imagen — `curl 127.0.0.1` en vez de `wget localhost`
-- `PUNTO_INTEGRATION.md` — doc de contrato Punto, modos de numeración
-- `NEXT_STEPS.md` — actualizado esta sesión (hosting prod + blockers)
+- `lib/de-validation.ts`, `api/src/routes/de.ts` — reglas por tipo, corren antes de reservar número
+- `api/src/routes/geo.ts` (nuevo) — catálogo `/v1/geo`
+- `api/src/db/migrations/0008_*.sql` — `numeracion.serie` + índice CDC parcial
+- `api/src/services/document-lookup.ts`, `tenant-cert.ts` — `findDocumentByCdc`, `withTenantCertFile`
+- `api/kude-templates/` — Jasper parcheado SCALE_FONT (usar siempre estos, no los de `node_modules`)
+- `api/kude-patch/` (nuevo) — auditoría reproducible de recorte fiscal (Audit.java, Docker con fuentes de prod)
+- `api/src/routes/admin/*`, `api/public/admin/` — panel: 6 endpoints lectura + anular/nc-total, UI rediseñada
+- `NEXT_STEPS.md` — actualizado (fila remisión, panel ya no es solo-lectura)
 
 ## Callejones sin salida
-1. Dockerfile location mal configurada en Coolify (`/Dockerfile` en vez de
-   `/api/Dockerfile`) — build context sigue siendo `/`.
-2. Coolify inyecta `NODE_ENV=production` en el build, no solo en runtime →
-   `npm install` omite devDependencies → `tsc: not found`. Fix:
-   `--include=dev` explícito en el Dockerfile.
-3. Healthcheck con `wget localhost` — Alpine resuelve `::1` (IPv6) primero,
-   Fastify solo escucha IPv4 → `connection refused` con el server sano.
-   Coolify SÍ gatea el deploy con el docker health status (local nunca lo
-   miró, por eso "andaba en local"). Fix: `curl 127.0.0.1`.
-4. Cancelar un deploy duplicado (webhook + API disparados sobre el mismo
-   commit) mató también el build bueno — no cancelar deploys concurrentes
-   del mismo commit en Coolify, esperar a que uno termine.
-5. Intento de crear droplet propio DO "fe-py" (s-2vcpu-4gb nyc3): bloqueado
-   por saldo pendiente en la cuenta DigitalOcean del owner — por eso se usó
-   el server de Punto como hosting temporal en vez de infra propia.
+- Serie "AA" NO se deduce de código viejo (Factomate, descartado) — se lee de `<dSerieNum>` del XML aprobado en SIFEN (por eso existe `GET /consulta/de/:cdc`).
+- Ciudad 145 = distrito de Ciudad del Este, NO Encarnación (2226) — verificar geo contra tablas de xmlgen, no memoria.
+- Parche KUDE de un solo campo (CDC) fue insuficiente; auditoría con fuentes de prod encontró más recortes. En macOS la auditoría da falsos negativos (fuentes angostas) — correr con Docker de fuentes de prod.
+- 2 subagentes de rediseño UI se colgaron (stall 600s); funcionó hacerlo inline con `window.fetch` stubbeado sirviendo el HTML.
+- Sondear deploy con "¿404 en /admin?" da falso positivo (build viejo también 404); usar señal exclusiva del build nuevo (401 del gate).
 
 ## Próximo paso
-**CAMBIO DE ARQUITECTURA decidido por el owner al cierre**: la company de
-FE-PY que usa producción es **"Punto"** (`01a08081-413a-7025-b64e-9f3bd112e2c2`,
-key en `company.punto.json` del scratchpad), y **el tenant de Balloon Party
-lo crea Punto desde su propia interfaz** vía API (alta de tenants = parte
-del producto Punto). La company "Actuo" + tenant pre-creado
-(`01a07f03-7335-...`) quedan como entorno de prueba — el PATCH de
-timbradoFecha que figuraba como blocker YA NO APLICA (era de ese tenant
-descartado).
-
-En orden: (1) owner sube el hand-off de credenciales al server (scp de
-`fepy-handoff.json` con el key de `company.punto.json`, comando en el chat)
-→ (2) la sesión Punto (`local_5c09615b-2531-438e-b575-857b0ceea283`, ya
-avisada con el contrato del alta: timbradoFecha 2025-08-26 EXACTA,
-razonSocial del padrón, numeración FE=614/NC=2) crea el tenant desde su
-flujo y hace el flip → (3) crear servicio WORKER en Coolify (duplicar app,
-start command `worker`) → (4) un ciclo de prueba E2E desde Punto (500 Gs →
-FE 615 → cancelación) → (5) cuando el owner salde DigitalOcean, migrar a
-droplet propio.
+Confirmar con Punto/SIFEN si el timbrado de Balloon Party tiene tipo 7
+habilitado y hacer una emisión real de remisión de prueba.
 
 ## Trampas conocidas
-- El scratchpad de la sesión anterior
-  (`/private/tmp/claude-501/.../scratchpad/`) tiene `company.prod.json`
-  (API KEY de prod) y `provision.js` — es temporal, **mover el API key a
-  un lugar seguro antes de perderlo**; si se pierde se rota con
-  `POST /companies/me/keys/rotate` (requiere el key actual).
-- La `MASTER_KEY` de prod quedó impresa en el terminal del owner (generada
-  a mano) — recomendar limpiar historial; ya está cargada en Coolify.
-- `S3_KEY_PREFIX` en las env de Coolify no existe en el API, se ignora.
-- El clasificador de permisos bloquea al agente para SSH al server,
-  comandos con secretos e INSERT/UPDATE SQL directo — el owner los corre a
-  mano.
-- Sesión Punto está esperando green light para el flip de FePyProvider —
-  no avisar hasta que el timbradoFecha y el hand-off de credenciales estén
-  resueltos.
+- `ADMIN_TOKEN` generado a mano y cargado en Coolify (solo API, no worker) — no está en ningún commit.
+- Serie "AA" cargada a mano por el owner, no por un endpoint del repo.
+- Las 2 NC pendientes de Punto ya se emitieron desde el panel y están APROBADAS; Punto debe marcar sus devoluciones con esos CDC, correr su correlativo y frenar el reintento de su NC huérfana (001-002-0000002, rechazada 1002: ese número lo consumió una NC de pruebas del 08/09 aprobada en SIFEN cuya fila local se borró al purgar el tenant viejo — SIFEN no se entera de purgas locales).
+- Punto ya deployó su lado (serie por punto en el body de cada POST /de).
+- Regla de memoria del agente: datos fiscales nunca se recortan/redondean en documentos generados; auditar contra fuentes de prod antes de dar un fix por bueno.

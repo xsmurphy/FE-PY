@@ -145,7 +145,8 @@ real, KUDE PDF, cancelación (evento 0600), NC, consulta WS (`0422`). Ver
 | Feature | Por qué no |
 |---|---|
 | Inutilización de numeración | No ejercitado esta sesión |
-| ND / Autofactura / remisión | No ejercitado esta sesión |
+| ND / Autofactura | No ejercitado esta sesión |
+| Remisión (tipo 7) | Implementada (validación por tipo + catálogo geo `/v1/geo`), pero nunca emitida contra SIFEN real — falta confirmar timbrado habilitado para tipo 7 |
 | Batch async (BullMQ) + retry worker | Worker no corre en el compose local (profile "workers" apagado) |
 | Receptor con CI sin RUC | No ejercitado esta sesión |
 | Emisión real desde prod (fepy.punto.la) | Bloqueada por `timbradoFecha` mal cargada, ver Blockers |
@@ -596,14 +597,16 @@ Una vez que tengas el primer cliente real emitiendo facturas en staging:
 
 ### Sprint 1 — Producto completo (2 semanas)
 
-- **Admin de companies (plataformas integradoras tipo Punto)** — **v1 de
-  solo lectura HECHA**: `/admin` sirve el panel de operador (companies →
-  tenants, tabla de documentos con filtros por estado/tipo, búsqueda por CDC
-  o por número, detalle con XML/KUDE presigned y eventos del CDC, últimos
-  eventos de todas las companies). Auth propia por `ADMIN_TOKEN`, separada de
+- **Admin de companies (plataformas integradoras tipo Punto)** — **HECHO**:
+  `/admin` sirve el panel de operador (companies → tenants, tabla de
+  documentos con filtros por estado/tipo, búsqueda por CDC o por número,
+  detalle con XML/KUDE presigned y eventos del CDC, últimos eventos de todas
+  las companies) más dos acciones de escritura acotadas: anular un DE y
+  emitir NC total (solo total, receptor identificado), usando los mismos
+  services que los integradores — el panel avisa que la numeración puede
+  adelantar al ERP del integrador. Auth propia por `ADMIN_TOKEN`, separada de
   las API keys de company y cerrada por defecto: sin la env var, `/admin`
-  responde 404 y `/v1/admin/*` responde 401. Ninguna ruta del panel muta
-  nada.
+  responde 404 y `/v1/admin/*` responde 401.
   Pendiente para la v2: alta de companies desde el panel (hoy sigue siendo
   `POST /v1/companies` con `x-signup-token` por curl), **revocar/rotar la API
   key de OTRA company** (hoy solo existe `POST /companies/me/keys/rotate`,

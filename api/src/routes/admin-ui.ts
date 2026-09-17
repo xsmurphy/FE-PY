@@ -34,6 +34,7 @@ export const ADMIN_HTML = String.raw`<!doctype html>
     --err: #ff5c5c;
     --warn: #ffb84d;
   }
+  html, body { overflow-x: hidden; }
   body {
     margin: 0;
     font: 14px -apple-system, system-ui, 'Segoe UI', Roboto, sans-serif;
@@ -94,8 +95,9 @@ export const ADMIN_HTML = String.raw`<!doctype html>
   .counter.warn b { color: var(--warn); }
   header button { padding: 5px 11px; font-size: 12px; }
 
-  .wrap { display: grid; grid-template-columns: 320px 1fr; gap: 16px; padding: 16px 20px; align-items: start; }
-  @media (max-width: 980px) { .wrap { grid-template-columns: 1fr; } }
+  .wrap { display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 16px; padding: 16px 20px; align-items: start; }
+  .wrap > * { min-width: 0; }
+  @media (max-width: 980px) { .wrap { grid-template-columns: minmax(0, 1fr); } }
 
   .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; }
   .panel > h2 {

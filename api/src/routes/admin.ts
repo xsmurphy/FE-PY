@@ -24,10 +24,11 @@ import { and, desc, eq, ilike, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { companies, documents, eventos, tenants } from '../db/schema.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
-import { NotFoundError } from '../lib/errors.js';
+import { NotFoundError, BadRequestError } from '../lib/errors.js';
 import { getPresignedDownloadUrl } from '../storage/s3.js';
 import { env } from '../config/env.js';
 import { ADMIN_HTML } from './admin-ui.js';
+import { cancelarDocumento } from '../services/evento.service.js';
 
 // ─────────────────────────────────────────────────────────────
 // Estados de documento: los 7 del enum, no solo los 4 finales.
@@ -607,6 +608,174 @@ export const adminRoutes: FastifyPluginAsyncZod = async (app) => {
       };
     },
   );
+  // ─────────────────────────────────────────────────────
+  // POST /v1/admin/documents/:id/cancelar — LA única mutación del panel
+  //
+  // Anula un documento aprobado mediante el evento de cancelación de SIFEN,
+  // con el mismo service que usa la ruta del integrador — ninguna regla se
+  // duplica acá (solo aprobados, motivo 10-500, ventana legal de 48h la
+  // valida SIFEN). Es irreversible y con efecto fiscal real, por eso:
+  //   - la UI exige motivo y una confirmación explícita con el número,
+  //   - queda un log WARN con el txnId y el operador no puede negarlo
+  //     después (auditoría real de "quién": pendiente para la v2, hoy hay
+  //     un solo token de operador).
+  // ─────────────────────────────────────────────────────
+  app.post(
+    '/admin/documents/:id/cancelar',
+    {
+      preHandler: [requireAdmin],
+      schema: {
+        hide: true,
+        params: z.object({ id: z.string().uuid() }),
+        body: z.object({ motivo: z.string().min(10).max(500) }),
+        response: {
+          201: z.object({
+            id: z.string(),
+            cdc: z.string().nullable(),
+            estado: z.string(),
+            sifenCodigoRespuesta: z.string().nullable(),
+            sifenMensaje: z.string().nullable(),
+          }),
+        },
+      },
+    },
+    async (request, reply) => {
+      const [doc] = await db
+        .select({ id: documents.id, cdc: documents.cdc, companyId: documents.companyId, tenantId: documents.tenantId })
+        .from(documents)
+        .where(eq(documents.id, request.params.id))
+        .limit(1);
+      if (!doc) throw new NotFoundError('Document');
+      if (!doc.cdc) throw new BadRequestError('El documento no tiene CDC — no hay nada que anular en SIFEN');
+
+      const [tenantRow] = await db.select().from(tenants).where(eq(tenants.id, doc.tenantId)).limit(1);
+      if (!tenantRow) throw new NotFoundError('Tenant del documento');
+
+      request.log.warn(
+        { txnId: doc.id, cdc: doc.cdc, tenantId: doc.tenantId, via: 'admin-panel' },
+        'Cancelación de documento disparada desde el panel de operador',
+      );
+
+      const result = await cancelarDocumento({
+        companyId: doc.companyId,
+        tenant: tenantRow,
+        cdc: doc.cdc,
+        motivo: request.body.motivo,
+      });
+
+      return reply.status(201).send({
+        id: result.id,
+        cdc: result.cdc ?? null,
+        estado: result.estado,
+        sifenCodigoRespuesta: result.sifenCodigoRespuesta ?? null,
+        sifenMensaje: result.sifenMensaje ?? null,
+      });
+    },
+  );
+
+
+  // ─────────────────────────────────────────────────────
+  // POST /v1/admin/documents/:id/nota-credito — NC TOTAL de una factura
+  //
+  // Emite una nota de crédito por el total de una factura aprobada,
+  // reconstruyendo el cuerpo desde request_json (mismos ítems, mismo
+  // receptor) y pasando por createDeDocument — o sea por TODAS las reglas
+  // de emisión (validación, numeración, firma, SIFEN). Nada se duplica.
+  //
+  // Guardas propias del panel:
+  //   - solo facturas (tipo 1) aprobadas;
+  //   - receptor identificado: SIFEN rechaza con 1331 la NC de una venta
+  //     a consumidor final innominado — se corta acá con mensaje claro;
+  //   - numeración AUTOMÁTICA de FE-PY: si el ERP del tenant lleva su
+  //     propio correlativo de NC, esto puede adelantarle un número. La UI
+  //     lo advierte antes de confirmar.
+  // ─────────────────────────────────────────────────────
+  app.post(
+    '/admin/documents/:id/nota-credito',
+    {
+      preHandler: [requireAdmin],
+      schema: {
+        hide: true,
+        params: z.object({ id: z.string().uuid() }),
+        body: z.object({
+          motivo: z.number().int().min(1).max(8).default(2),
+        }),
+        response: {
+          201: z.object({
+            txnId: z.string(),
+            cdc: z.string().nullable(),
+            estado: z.string(),
+            numero: z.string(),
+            sifenCodigoRespuesta: z.string().nullable(),
+            sifenMensaje: z.string().nullable(),
+          }),
+        },
+      },
+    },
+    async (request, reply) => {
+      const [doc] = await db.select().from(documents).where(eq(documents.id, request.params.id)).limit(1);
+      if (!doc) throw new NotFoundError('Document');
+      if (doc.tipo !== 1) throw new BadRequestError('Solo se emite NC total sobre una factura (tipo 1)');
+      if (doc.estado !== 'aprobado') {
+        throw new BadRequestError(`La factura no está aprobada (estado: ${doc.estado}) — no hay qué acreditar`);
+      }
+      if (!doc.cdc) throw new BadRequestError('La factura no tiene CDC');
+
+      const original = doc.requestJson as Record<string, unknown>;
+      const cliente = (original.cliente ?? {}) as Record<string, unknown>;
+      const identificado =
+        cliente.contribuyente === true ||
+        (cliente.documentoNumero != null && String(cliente.documentoNumero) !== '0');
+      if (!identificado) {
+        throw new BadRequestError(
+          'La factura es a consumidor final innominado — SIFEN rechaza la NC (1331). ' +
+            'Primero hay que nominar al receptor.',
+        );
+      }
+
+      const [tenantRow] = await db.select().from(tenants).where(eq(tenants.id, doc.tenantId)).limit(1);
+      if (!tenantRow) throw new NotFoundError('Tenant del documento');
+      const [companyRow] = await db.select().from(companies).where(eq(companies.id, doc.companyId)).limit(1);
+
+      request.log.warn(
+        { txnId: doc.id, cdc: doc.cdc, tenantId: doc.tenantId, via: 'admin-panel' },
+        'NC total disparada desde el panel de operador',
+      );
+
+      const { createDeDocument } = await import('../services/de.service.js');
+      const result = await createDeDocument({
+        companyId: doc.companyId,
+        leyendaDocumento: companyRow?.leyendaDocumento ?? null,
+        tenant: tenantRow,
+        body: {
+          tipoDocumento: 5,
+          establecimiento: doc.establecimiento,
+          punto: doc.punto,
+          tipoEmision: 1,
+          tipoTransaccion: (original.tipoTransaccion as number | undefined) ?? 1,
+          tipoImpuesto: (original.tipoImpuesto as number | undefined) ?? 1,
+          moneda: doc.moneda,
+          cliente,
+          items: original.items,
+          ...(original.consolidacion ? { consolidacion: original.consolidacion } : {}),
+          ...(original.serie ? { serie: original.serie } : {}),
+          notaCreditoDebito: { motivo: request.body.motivo },
+          documentoAsociado: { formato: 1, cdc: doc.cdc },
+          observacion: `NC total de la factura ${doc.establecimiento}-${doc.punto}-${doc.numero} (emitida desde el panel de operador)`,
+        },
+      });
+
+      return reply.status(201).send({
+        txnId: result.txnId,
+        cdc: result.cdc ?? null,
+        estado: result.estado,
+        numero: result.numero,
+        sifenCodigoRespuesta: result.sifenCodigoRespuesta ?? null,
+        sifenMensaje: result.sifenMensaje ?? null,
+      });
+    },
+  );
+
 };
 
 /**
@@ -624,6 +793,7 @@ const extractEventoCodigo = (raw: unknown): string | null => {
     if (typeof c === 'number') return String(c);
   }
   return null;
+
 };
 
 /**

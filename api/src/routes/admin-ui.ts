@@ -196,6 +196,20 @@ export const ADMIN_HTML = String.raw`<!doctype html>
     white-space: pre-wrap; word-break: break-word;
   }
   .msg { background: var(--panel-2); border-radius: 8px; padding: 10px 12px; white-space: pre-wrap; }
+  button.danger { background: transparent; border: 1px solid rgba(255,92,92,.4); color: var(--err); }
+  button.danger:hover { background: rgba(255,92,92,.12); color: var(--err); }
+  .action-form {
+    border: 1px solid var(--border); border-radius: 8px; padding: 14px;
+    margin-top: 14px; background: var(--panel-2);
+  }
+  .action-form h4 { margin: 0 0 8px; font-size: 13px; }
+  .action-form .warn-text { color: var(--warn); font-size: 12px; margin: 0 0 10px; }
+  .action-form textarea {
+    width: 100%; min-height: 64px; resize: vertical; padding: 7px 9px; font: inherit; font-size: 13px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 6px; color: var(--text);
+  }
+  .action-form .row { display: flex; gap: 8px; margin-top: 10px; align-items: center; }
+  .action-form .result { margin-top: 10px; font-size: 12.5px; white-space: pre-wrap; }
 </style>
 </head>
 <body>
@@ -302,6 +316,8 @@ export const ADMIN_HTML = String.raw`<!doctype html>
       <div class="spacer"></div>
       <button class="secondary" id="btn-kude">Ver KUDE</button>
       <button class="secondary" id="btn-xml">Ver XML</button>
+      <button class="secondary" id="btn-nc" style="display:none">NC total…</button>
+      <button class="danger" id="btn-anular" style="display:none">Anular…</button>
       <button class="secondary" id="detail-close">Cerrar</button>
     </div>
     <div class="body" id="detail-body"></div>
@@ -382,6 +398,21 @@ function api(path) {
       return res.text().then(function (t) { throw new Error('HTTP ' + res.status + ' — ' + t); });
     }
     return res.json();
+  });
+}
+
+function apiPost(path, body) {
+  if (!state.token) return Promise.reject(new Error('unauthorized'));
+  return fetch(path, {
+    method: 'POST',
+    headers: { 'x-admin-token': state.token, 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  }).then(function (res) {
+    if (res.status === 401) { logout('Token inválido o el panel está deshabilitado.'); throw new Error('unauthorized'); }
+    return res.json().then(function (data) {
+      if (!res.ok) throw new Error(data && data.message ? data.message : 'HTTP ' + res.status);
+      return data;
+    });
   });
 }
 
@@ -678,7 +709,19 @@ function openDetail(id) {
       html += '<h3 class="section">Payload original del integrador</h3><pre>' + esc(JSON.stringify(d.requestJson, null, 2)) + '</pre>';
     }
 
+    html += '<div id="action-zone"></div>';
+
     el('detail-body').innerHTML = html;
+
+    // Acciones: anular solo aprobados sin cancelación previa aprobada;
+    // NC total además solo sobre facturas (tipo 1).
+    var yaCancelado = d.eventos.some(function (ev) {
+      return ev.tipoEvento === 'cancelacion' && ev.estado === 'aprobado';
+    });
+    var anulable = d.estado === 'aprobado' && !yaCancelado;
+    el('btn-anular').style.display = anulable ? '' : 'none';
+    el('btn-nc').style.display = anulable && d.tipo === 1 ? '' : 'none';
+
     el('overlay').classList.add('open');
   }).catch(function (err) {
     if (err.message !== 'unauthorized') alert(err.message);
@@ -709,6 +752,82 @@ el('next-btn').onclick = function () {
   state.offset = state.offset + state.limit;
   loadDocuments(false);
 };
+// ── Acciones con efecto fiscal (anular / NC total) ────────
+// Ambas piden confirmación en un formulario inline dentro del drawer: el
+// operador ve el número del documento en el botón de confirmar y el
+// resultado de SIFEN queda impreso ahí mismo.
+function mostrarFormAccion(html) {
+  el('action-zone').innerHTML = '<div class="action-form">' + html + '</div>';
+  el('action-zone').scrollIntoView({ block: 'nearest' });
+}
+
+el('btn-anular').onclick = function () {
+  var d = state.detail;
+  if (!d) return;
+  var num = d.establecimiento + '-' + d.punto + '-' + d.numero;
+  mostrarFormAccion(
+    '<h4>Anular ' + esc(fmtTipo(d.tipo)) + ' ' + esc(num) + '</h4>' +
+    '<p class="warn-text">Irreversible y con efecto fiscal real. Ventana legal de SIFEN: 48 horas desde la emisión.</p>' +
+    '<textarea id="anular-motivo" placeholder="Motivo de la anulación (10 a 500 caracteres)"></textarea>' +
+    '<div class="row">' +
+      '<button class="danger" id="anular-confirm">Anular definitivamente ' + esc(num) + '</button>' +
+      '<button class="secondary" id="anular-cancel">Volver</button>' +
+    '</div><div class="result" id="anular-result"></div>'
+  );
+  el('anular-cancel').onclick = function () { el('action-zone').innerHTML = ''; };
+  el('anular-confirm').onclick = function () {
+    var motivo = el('anular-motivo').value.trim();
+    if (motivo.length < 10) { el('anular-result').textContent = 'El motivo debe tener al menos 10 caracteres.'; return; }
+    el('anular-confirm').disabled = true;
+    apiPost('/v1/admin/documents/' + encodeURIComponent(d.txnId) + '/cancelar', { motivo: motivo })
+      .then(function (r) {
+        el('anular-result').innerHTML = 'Evento de cancelación: ' + estadoTag(r.estado) +
+          (r.sifenMensaje ? ' — ' + esc(r.sifenCodigoRespuesta ? r.sifenCodigoRespuesta + ' ' : '') + esc(r.sifenMensaje) : '');
+        loadOverview(); loadDocuments(false); loadEventos();
+        openDetail(d.txnId);
+      })
+      .catch(function (err) {
+        el('anular-confirm').disabled = false;
+        if (err.message !== 'unauthorized') el('anular-result').textContent = err.message;
+      });
+  };
+};
+
+var NC_MOTIVOS = { 1: 'Devolución y ajuste de precio', 2: 'Devolución', 3: 'Descuento', 4: 'Bonificación', 5: 'Crédito incobrable', 6: 'Recupero de costo', 7: 'Recupero de gasto', 8: 'Ajuste de precio' };
+
+el('btn-nc').onclick = function () {
+  var d = state.detail;
+  if (!d) return;
+  var num = d.establecimiento + '-' + d.punto + '-' + d.numero;
+  var opts = '';
+  for (var k in NC_MOTIVOS) opts += '<option value="' + k + '"' + (k === '2' ? ' selected' : '') + '>' + k + ' — ' + NC_MOTIVOS[k] + '</option>';
+  mostrarFormAccion(
+    '<h4>Nota de crédito TOTAL de ' + esc(num) + '</h4>' +
+    '<p class="warn-text">Emite una NC real por el total (' + esc(fmtMonto(d.montoTotal, d.moneda)) + '), mismos ítems y receptor. ' +
+    'La numeración de la NC la asigna FE-PY: si el ERP del tenant lleva su propio correlativo de NC, esto puede adelantarle un número.</p>' +
+    '<label style="font-size:12px;color:var(--muted)">Motivo<br><select id="nc-motivo" style="margin-top:4px">' + opts + '</select></label>' +
+    '<div class="row">' +
+      '<button id="nc-confirm">Emitir NC total de ' + esc(num) + '</button>' +
+      '<button class="secondary" id="nc-cancel">Volver</button>' +
+    '</div><div class="result" id="nc-result"></div>'
+  );
+  el('nc-cancel').onclick = function () { el('action-zone').innerHTML = ''; };
+  el('nc-confirm').onclick = function () {
+    el('nc-confirm').disabled = true;
+    apiPost('/v1/admin/documents/' + encodeURIComponent(d.txnId) + '/nota-credito', { motivo: Number(el('nc-motivo').value) })
+      .then(function (r) {
+        el('nc-result').innerHTML = 'NC ' + esc(r.numero) + ': ' + estadoTag(r.estado) +
+          (r.sifenMensaje ? ' — ' + esc(r.sifenCodigoRespuesta ? r.sifenCodigoRespuesta + ' ' : '') + esc(r.sifenMensaje) : '') +
+          (r.cdc ? '<br><span class="mono">' + esc(r.cdc) + '</span>' : '');
+        loadOverview(); loadDocuments(false);
+      })
+      .catch(function (err) {
+        el('nc-confirm').disabled = false;
+        if (err.message !== 'unauthorized') el('nc-result').textContent = err.message;
+      });
+  };
+};
+
 el('detail-close').onclick = closeDetail;
 el('overlay').onclick = function (e) { if (e.target === el('overlay')) closeDetail(); };
 document.onkeydown = function (e) { if (e.key === 'Escape') closeDetail(); };

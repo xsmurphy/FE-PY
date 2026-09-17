@@ -23,16 +23,16 @@ export const ADMIN_HTML = String.raw`<!doctype html>
 <style>
   * { box-sizing: border-box; }
   :root {
-    --bg: #0f1419;
-    --panel: #1a1f26;
-    --panel-2: #222831;
-    --border: #2d3540;
-    --text: #e5e7eb;
-    --muted: #9ca3af;
-    --accent: #3b82f6;
-    --ok: #10b981;
-    --err: #ef4444;
-    --warn: #f59e0b;
+    --bg: #0b0e14;
+    --panel: #11151d;
+    --panel-2: #1a2030;
+    --border: #1e2431;
+    --text: #e6e9ef;
+    --muted: #8b93a7;
+    --accent: #4f8cff;
+    --ok: #2ecc8f;
+    --err: #ff5c5c;
+    --warn: #ffb84d;
   }
   body {
     margin: 0;
@@ -56,7 +56,7 @@ export const ADMIN_HTML = String.raw`<!doctype html>
   #login .err { color: var(--err); font-size: 12px; margin-top: 10px; min-height: 16px; }
 
   input, select {
-    width: 100%; padding: 8px 10px;
+    width: 100%; padding: 7px 9px; font-size: 13px;
     background: var(--panel-2); border: 1px solid var(--border);
     border-radius: 6px; color: var(--text); font: inherit;
   }
@@ -68,27 +68,31 @@ export const ADMIN_HTML = String.raw`<!doctype html>
   }
   button:hover { background: #2563eb; }
   button:disabled { opacity: .5; cursor: not-allowed; }
-  button.secondary { background: var(--panel-2); border: 1px solid var(--border); color: var(--text); }
-  button.secondary:hover { background: #2d3540; }
+  button.secondary { background: transparent; border: 1px solid var(--border); color: var(--muted); font-weight: 500; }
+  button.secondary:hover { background: var(--panel-2); color: var(--text); }
   button.wide { width: 100%; }
 
   /* ── App ─────────────────────────────────── */
   #app { display: none; }
   header {
-    border-bottom: 1px solid var(--border); padding: 14px 20px;
-    display: flex; align-items: center; gap: 20px; flex-wrap: wrap;
+    border-bottom: 1px solid var(--border); padding: 0 20px; height: 52px;
+    display: flex; align-items: center; gap: 14px;
+    position: sticky; top: 0; background: var(--bg); z-index: 10;
   }
-  header h1 { margin: 0; font-size: 16px; white-space: nowrap; }
+  header h1 { margin: 0; font-size: 14px; white-space: nowrap; letter-spacing: .2px; }
+  header h1 small { color: var(--muted); font-weight: 400; }
   header .spacer { flex: 1; }
-  .counters { display: flex; gap: 8px; flex-wrap: wrap; }
+  .counters { display: flex; gap: 4px; flex-wrap: wrap; overflow: hidden; }
   .counter {
-    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
-    padding: 6px 12px; font-size: 12px; color: var(--muted); white-space: nowrap;
+    display: inline-flex; align-items: baseline; gap: 6px;
+    padding: 4px 9px; border-radius: 6px; font-size: 11.5px; color: var(--muted);
+    white-space: nowrap; background: transparent;
   }
-  .counter b { display: block; font-size: 16px; color: var(--text); font-weight: 700; }
+  .counter b { font-size: 13px; color: var(--text); font-weight: 650; font-variant-numeric: tabular-nums; }
   .counter.ok b { color: var(--ok); }
   .counter.err b { color: var(--err); }
   .counter.warn b { color: var(--warn); }
+  header button { padding: 5px 11px; font-size: 12px; }
 
   .wrap { display: grid; grid-template-columns: 320px 1fr; gap: 16px; padding: 16px 20px; align-items: start; }
   @media (max-width: 980px) { .wrap { grid-template-columns: 1fr; } }
@@ -113,7 +117,7 @@ export const ADMIN_HTML = String.raw`<!doctype html>
   .tree-tenant.active { background: var(--panel-2); border-left-color: var(--accent); }
   .tree-tenant .rs { font-size: 13px; }
   .tree-tenant .ruc { color: var(--muted); font-size: 11px; }
-  .tree-tenant .counts { margin-top: 4px; display: flex; gap: 6px; flex-wrap: wrap; font-size: 10px; }
+  .tree-tenant .counts { margin-top: 3px; font-size: 11px; color: var(--muted); }
 
   .badge {
     display: inline-block; padding: 1px 7px; border-radius: 999px;
@@ -138,13 +142,14 @@ export const ADMIN_HTML = String.raw`<!doctype html>
   .filters label span { display: block; margin-bottom: 3px; }
 
   .scroll-x { overflow-x: auto; }
-  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums; }
   th {
     text-align: left; padding: 8px 10px; color: var(--muted); font-size: 11px;
     text-transform: uppercase; letter-spacing: .5px; border-bottom: 1px solid var(--border);
     white-space: nowrap;
   }
-  td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  td { padding: 7px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; white-space: nowrap; }
+  td.trunc { max-width: 190px; overflow: hidden; text-overflow: ellipsis; }
   tbody tr { cursor: pointer; }
   tbody tr:hover { background: var(--panel-2); }
   td.num { text-align: right; white-space: nowrap; font-family: Monaco, Consolas, monospace; }
@@ -205,7 +210,7 @@ export const ADMIN_HTML = String.raw`<!doctype html>
 
 <div id="app">
   <header>
-    <h1>FE-PY — Operador</h1>
+    <h1>FE-PY <small>· Panel de operador</small></h1>
     <div class="counters" id="counters"></div>
     <div class="spacer"></div>
     <button class="secondary" id="reload-btn">Recargar</button>
@@ -342,8 +347,17 @@ function fmtFecha(iso) {
   if (!iso) return '—';
   var d = new Date(iso);
   if (isNaN(d.getTime())) return iso;
-  return d.toLocaleString('es-PY', { dateStyle: 'short', timeStyle: 'short' });
+  var p = function (n) { return String(n).length < 2 ? '0' + n : String(n); };
+  return p(d.getDate()) + '/' + p(d.getMonth() + 1) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
 }
+
+// CDC truncado al medio para la tabla: importa el arranque (tipo+RUC) y el
+// final (que es lo que difiere entre documentos vecinos).
+function fmtCdc(cdc) {
+  if (!cdc) return '—';
+  return cdc.slice(0, 8) + '…' + cdc.slice(-8);
+}
+var TIPOS_CORTO = { 1: 'FE', 4: 'AF', 5: 'NC', 6: 'ND', 7: 'NR' };
 
 var TIPOS = { 1: 'Factura', 4: 'Autofactura', 5: 'Nota de crédito', 6: 'Nota de débito', 7: 'Nota de remisión' };
 function fmtTipo(t) { return (TIPOS[t] || 'Tipo ' + t) + ' (' + t + ')'; }
@@ -467,12 +481,12 @@ function renderTree(companies) {
       html += ' <span class="badge ' + esc(t.env) + '">' + esc(t.env) + '</span>';
       if (t.status !== 'active') html += ' <span class="badge ' + esc(t.status) + '">' + esc(t.status) + '</span>';
       html += '</div>';
-      html += '<div class="counts">';
-      html += '<span class="estado estado-aprobado">' + t.documentos.aprobado + ' ok</span>';
-      html += '<span class="estado estado-rechazado">' + t.documentos.rechazado + ' rech</span>';
-      html += '<span class="estado estado-error">' + t.documentos.error + ' err</span>';
-      html += '<span class="estado estado-pendiente">' + t.documentos.total + ' total</span>';
-      html += '</div></div>';
+      var dd = t.documentos;
+      var partes = [dd.aprobado + ' ok'];
+      if (dd.rechazado) partes.push('<span style="color:var(--err)">' + dd.rechazado + ' rech</span>');
+      if (dd.error) partes.push('<span style="color:var(--warn)">' + dd.error + ' err</span>');
+      partes.push(dd.total + ' total');
+      html += '<div class="counts">' + partes.join(' · ') + '</div></div>';
     }
     html += '</div>';
   }
@@ -535,13 +549,13 @@ function renderDocs(r) {
     var sifen = d.sifenCodigoRespuesta ? d.sifenCodigoRespuesta : '';
     var detalle = d.sifenMensaje || d.errorMessage || '';
     html += '<tr data-id="' + esc(d.txnId) + '">';
-    html += '<td class="mono">' + esc(fmtFecha(d.createdAt)) + '</td>';
-    html += '<td>' + esc(d.companyName) + '</td>';
-    html += '<td>' + esc(d.tenantRazonSocial) + '</td>';
-    html += '<td>' + esc(d.tipo) + '</td>';
+    html += '<td class="mono" title="' + esc(d.createdAt) + '">' + esc(fmtFecha(d.createdAt)) + '</td>';
+    html += '<td class="trunc" style="max-width:110px" title="' + esc(d.companyName) + '">' + esc(d.companyName) + '</td>';
+    html += '<td class="trunc" title="' + esc(d.tenantRazonSocial) + '">' + esc(d.tenantRazonSocial) + '</td>';
+    html += '<td title="' + esc(fmtTipo(d.tipo)) + '">' + esc(TIPOS_CORTO[d.tipo] || d.tipo) + '</td>';
     html += '<td class="mono">' + esc(d.establecimiento + '-' + d.punto + '-' + d.numero) + '</td>';
     html += '<td>' + estadoTag(d.estado) + '</td>';
-    html += '<td class="mono truncate" title="' + esc(d.cdc || '') + '">' + esc(d.cdc || '—') + '</td>';
+    html += '<td class="mono" title="' + esc(d.cdc || '') + '">' + esc(fmtCdc(d.cdc)) + '</td>';
     html += '<td class="num">' + esc(fmtMonto(d.montoTotal, d.moneda)) + '</td>';
     html += '<td class="truncate" title="' + esc(detalle) + '">' + esc(sifen ? sifen + ' ' + detalle : detalle) + '</td>';
     html += '</tr>';
@@ -592,7 +606,7 @@ function loadEventos() {
       html += '<td>' + esc(e.tenantRazonSocial) + '</td>';
       html += '<td>' + esc(e.tipoEvento) + '</td>';
       html += '<td>' + estadoTag(e.estado) + '</td>';
-      html += '<td class="mono truncate" title="' + esc(e.documentCdc || '') + '">' + esc(e.documentCdc || '—') + '</td>';
+      html += '<td class="mono" title="' + esc(e.documentCdc || '') + '">' + esc(fmtCdc(e.documentCdc)) + '</td>';
       html += '<td>' + esc(e.sifenCodigoRespuesta || '—') + '</td>';
       html += '</tr>';
     }
